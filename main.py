@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -35,6 +36,9 @@ SKILL_DIR   = Path(__file__).parent / "skills" / "ppt-master"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 PROJECTS_DIR = Path(__file__).parent / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
+
+SUPABASE_URL         = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -64,6 +68,7 @@ class GenerateRequest(BaseModel):
     palette:          Palette
     slides_count:     int = 10
     tenant_id:        str
+    title:            str = ""
     provider:         Literal["claude", "mistral"] = "claude"
 
 # ─────────────────────────────────────────────
@@ -304,6 +309,56 @@ def _run(script: str, project_dir: Path) -> None:
         logger.warning("[%s stderr] %s", script, r.stderr[:500])
 
 # ─────────────────────────────────────────────
+# SUPABASE HELPERS
+# ─────────────────────────────────────────────
+
+async def upload_to_supabase(pptx_bytes: bytes, tenant_id: str, title: str) -> str:
+    safe_title = re.sub(r"[^\w\-]", "_", title)[:50]
+    filename   = f"{tenant_id}/{int(time.time())}_{safe_title}.pptx"
+    url        = f"{SUPABASE_URL}/storage/v1/object/studio-documents/{filename}"
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            url,
+            content=pptx_bytes,
+            headers={
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type":  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            },
+        )
+        resp.raise_for_status()
+    return f"{SUPABASE_URL}/storage/v1/object/public/studio-documents/{filename}"
+
+
+async def _sb_upsert_document(
+    tenant_id: str,
+    titre: str,
+    format: str,
+    design: str,
+    pptx_url: str,
+    html_content: str | None,
+) -> str:
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"{SUPABASE_URL}/rest/v1/studio_documents",
+            headers={
+                "apikey":        SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type":  "application/json",
+                "Prefer":        "return=representation",
+            },
+            json={
+                "tenant_id":    tenant_id,
+                "titre":        titre,
+                "format":       format,
+                "design":       design,
+                "pptx_url":     pptx_url,
+                "html_content": html_content,
+            },
+        )
+        r.raise_for_status()
+        return r.json()[0]["id"]
+
+# ─────────────────────────────────────────────
 # ROUTE — POST /generate-pptx
 # ─────────────────────────────────────────────
 
@@ -408,8 +463,34 @@ async def generate_pptx(req: GenerateRequest):
     pptx = exports[0]
     logger.info("[%s] DONE → %s", job_id, pptx.name)
 
-    pptx_b64 = base64.b64encode(pptx.read_bytes()).decode("utf-8")
-    return {"pptx_base64": pptx_b64, "filename": f"presentation_{job_id}.pptx"}
+    pptx_bytes = pptx.read_bytes()
+    pptx_b64   = base64.b64encode(pptx_bytes).decode("utf-8")
+
+    title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
+    pptx_url    = ""
+    document_id = ""
+
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        try:
+            pptx_url    = await upload_to_supabase(pptx_bytes, req.tenant_id, title)
+            document_id = await _sb_upsert_document(
+                tenant_id=req.tenant_id,
+                titre=title,
+                format="paysage",
+                design="ppt-master",
+                pptx_url=pptx_url,
+                html_content=None,
+            )
+            logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
+        except Exception as e:
+            logger.warning("[%s] Supabase storage/DB error: %s", job_id, e)
+
+    return {
+        "status":      "done",
+        "pptx_base64": pptx_b64,
+        "pptx_url":    pptx_url,
+        "document_id": document_id,
+    }
 
 # ─────────────────────────────────────────────
 # HEALTH
