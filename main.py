@@ -8,6 +8,7 @@ Pipeline (headless, non-interactive):
   Phase C – Scripts              → finalize_svg.py → svg_to_pptx.py → PPTX
 """
 
+import base64
 import json
 import logging
 import os
@@ -23,7 +24,6 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -416,11 +416,8 @@ async def generate_pptx(req: GenerateRequest):
     pptx = exports[0]
     logger.info("[%s] DONE → %s", job_id, pptx.name)
 
-    return FileResponse(
-        path=str(pptx),
-        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        filename=f"presentation_{job_id}.pptx",
-    )
+    pptx_b64 = base64.b64encode(pptx.read_bytes()).decode("utf-8")
+    return {"pptx_base64": pptx_b64, "filename": f"presentation_{job_id}.pptx"}
 
 # ─────────────────────────────────────────────
 # HEALTH
