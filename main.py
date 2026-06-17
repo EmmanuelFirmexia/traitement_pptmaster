@@ -69,7 +69,16 @@ class GenerateRequest(BaseModel):
     slides_count:     int = 10
     tenant_id:        str
     title:            str = ""
+    layout:           str = "free"
     provider:         Literal["claude", "mistral"] = "claude"
+
+_LAYOUT_LABELS: dict[str, str] = {
+    "glassmorphism":   "Glassmorphism SaaS — frosted glass, blur, semi-transparent dark panels, glow accents",
+    "swiss_grid":      "Swiss Grid — strict typographic grid, clean geometry, bold sans-serif, high contrast",
+    "editorial":       "Editorial Magazine — editorial layout, varied type sizes, strong visual hierarchy, photo-ready rects",
+    "data_journalism": "Data Journalism — data-forward, clear chart placeholder zones, minimal, dominant white space",
+    "free":            "Free Modern Design — balanced, polished, professionally designed",
+}
 
 # ─────────────────────────────────────────────
 # APP
@@ -193,6 +202,9 @@ SPEC LOCK:
 
 SOURCE CONTENT:
 {content}
+
+VISUAL STYLE: {layout_label}
+Apply this aesthetic consistently — colors, shapes, gradients, and layout patterns must reflect this style.
 
 {extra}
 
@@ -415,6 +427,7 @@ async def generate_pptx(req: GenerateRequest):
         shared_standards=_skill("references/shared-standards.md", 2000),
         slides_count_padded=n_pad,
     )
+    layout_label = _LAYOUT_LABELS.get(req.layout or "free", _LAYOUT_LABELS["free"])
     usr_b = _EXECUTOR_USER.format(
         slides_count=n,
         slides_count_minus_1=n - 1,
@@ -423,6 +436,7 @@ async def generate_pptx(req: GenerateRequest):
         spec_lock_md=spec_lock_md,
         content=req.content,
         primary=req.palette.primary,
+        layout_label=layout_label,
         extra=extra,
     )
 
@@ -451,6 +465,16 @@ async def generate_pptx(req: GenerateRequest):
     _run("finalize_svg.py",   project_dir)
     _run("svg_to_pptx.py",   project_dir)
 
+    # ── COLLECT FINAL SVG SLIDES ──────────────────────────────
+    svg_final_dir  = project_dir / "svg_final"
+    svg_output_dir = project_dir / "svg_output"
+    svg_source     = svg_final_dir if list(svg_final_dir.glob("*.svg")) else svg_output_dir
+    svg_slides     = [
+        {"filename": p.name, "content": p.read_text(encoding="utf-8")}
+        for p in sorted(svg_source.glob("*.svg"))
+    ]
+    logger.info("[%s] %d SVG slides collected from %s", job_id, len(svg_slides), svg_source.name)
+
     # ── FIND PPTX ─────────────────────────────────────────────
     exports = sorted(
         (project_dir / "exports").glob("*.pptx"),
@@ -463,8 +487,9 @@ async def generate_pptx(req: GenerateRequest):
     pptx = exports[0]
     logger.info("[%s] DONE → %s", job_id, pptx.name)
 
-    pptx_bytes = pptx.read_bytes()
-    pptx_b64   = base64.b64encode(pptx_bytes).decode("utf-8")
+    pptx_bytes   = pptx.read_bytes()
+    pptx_b64     = base64.b64encode(pptx_bytes).decode("utf-8")
+    html_content = json.dumps(svg_slides, ensure_ascii=False) if svg_slides else None
 
     title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
     pptx_url    = ""
@@ -479,7 +504,7 @@ async def generate_pptx(req: GenerateRequest):
                 format="paysage",
                 design="ppt-master",
                 pptx_url=pptx_url,
-                html_content=None,
+                html_content=html_content,
             )
             logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
         except Exception as e:
@@ -490,6 +515,7 @@ async def generate_pptx(req: GenerateRequest):
         "pptx_base64": pptx_b64,
         "pptx_url":    pptx_url,
         "document_id": document_id,
+        "svg_slides":  svg_slides,
     }
 
 # ─────────────────────────────────────────────
