@@ -218,13 +218,16 @@ Instructions:
 
 def _claude_call(system: str, user: str, max_tokens: int = 8192) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    msg = client.messages.create(
-        model="claude-opus-4-7",
+    full_response = ""
+    with client.messages.stream(
+        model="claude-sonnet-4-6",
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
-    )
-    return msg.content[0].text
+    ) as stream:
+        for text in stream.text_stream:
+            full_response += text
+    return full_response
 
 
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
