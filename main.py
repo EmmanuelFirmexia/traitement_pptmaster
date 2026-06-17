@@ -110,11 +110,13 @@ REFERENCE — spec_lock.md skeleton (follow this EXACTLY):
 REFERENCE — shared technical standards (SVG/PPTX rules):
 {shared_standards}
 
-OUTPUT FORMAT — return exactly this JSON object and nothing else:
-{{
-  "design_spec_md": "<full content of design_spec.md>",
-  "spec_lock_md":   "<full content of spec_lock.md>"
-}}
+OUTPUT FORMAT — respond with EXACTLY this structure, no markdown around the blocks:
+DESIGN_SPEC_START
+[full content of design_spec.md as plain text]
+DESIGN_SPEC_END
+SPEC_LOCK_START
+[full content of spec_lock.md as plain text]
+SPEC_LOCK_END
 """.strip()
 
 _STRATEGIST_USER = """
@@ -142,7 +144,7 @@ Rules:
 - No images section needed (placeholder rectangles will be used).
 - font_family: "Calibri", Arial, sans-serif
 - body: 22, title: 40, subtitle: 28, annotation: 14
-- Output ONLY the JSON object — no prose, no markdown fences.
+- Use the DESIGN_SPEC_START / DESIGN_SPEC_END and SPEC_LOCK_START / SPEC_LOCK_END markers exactly.
 """.strip()
 
 # ─────────────────────────────────────────────
@@ -246,33 +248,37 @@ async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) ->
 # RESPONSE PARSERS
 # ─────────────────────────────────────────────
 
-def _extract_json(text: str) -> str:
-    """Strip prose / fences around a JSON block."""
-    text = text.strip()
-    # Remove ```json ... ``` fences
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\s*```\s*$", "", text, flags=re.MULTILINE)
-    # Find the outermost { } or [ ]
+def _extract_json_safe(raw: str) -> str:
+    """Strip markdown fences and extract the outermost JSON object or array."""
+    cleaned = re.sub(r"^```json\s*", "", raw.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned, flags=re.MULTILINE)
     for start_char, end_char in [('{', '}'), ('[', ']')]:
-        start = text.find(start_char)
-        end   = text.rfind(end_char)
+        start = cleaned.find(start_char)
+        end   = cleaned.rfind(end_char)
         if start != -1 and end != -1 and end > start:
-            candidate = text[start:end + 1]
+            candidate = cleaned[start:end + 1]
             try:
                 json.loads(candidate)
                 return candidate
             except json.JSONDecodeError:
                 continue
-    return text
+    raise ValueError("No valid JSON object found in response")
 
 
 def _parse_strategist(raw: str) -> tuple[str, str]:
-    data = json.loads(_extract_json(raw))
-    return data["design_spec_md"], data["spec_lock_md"]
+    """Parse Strategist response using DESIGN_SPEC / SPEC_LOCK text markers."""
+    m_spec = re.search(r"DESIGN_SPEC_START\n(.*?)\nDESIGN_SPEC_END", raw, re.DOTALL)
+    m_lock = re.search(r"SPEC_LOCK_START\n(.*?)\nSPEC_LOCK_END", raw, re.DOTALL)
+    if not m_spec or not m_lock:
+        raise ValueError(
+            f"Strategist markers not found. Raw (first 400 chars): {raw[:400]}"
+        )
+    return m_spec.group(1).strip(), m_lock.group(1).strip()
 
 
 def _parse_executor(raw: str) -> dict[str, str]:
-    data = json.loads(_extract_json(raw))
+    """Parse Executor JSON array of {{path, content}} objects."""
+    data = json.loads(_extract_json_safe(raw))
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array of {path, content} objects")
     return {item["path"]: item["content"] for item in data}
