@@ -75,23 +75,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
-ALLOWED_ORIGINS = [
-    "https://app-leadpme.lovable.app",
-    "https://leadpme.firmexia.com",
-    "https://*.lovable.app",
-    "https://*.lovableproject.com",
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
-extra = os.environ.get("EXTRA_CORS_ORIGIN")
-if extra:
-    ALLOWED_ORIGINS.append(extra)
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.(lovable\.app|lovableproject\.com|firmexia\.com|railway\.app)$",
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
