@@ -34,8 +34,9 @@ load_dotenv()
 # ─────────────────────────────────────────────
 SKILL_DIR   = Path(__file__).parent / "skills" / "ppt-master"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
-PROJECTS_DIR = Path(__file__).parent / "projects"
+PROJECTS_DIR  = Path(__file__).parent / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
+EXAMPLES_DIR  = Path(__file__).parent / "examples"
 
 SUPABASE_URL         = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -72,13 +73,57 @@ class GenerateRequest(BaseModel):
     layout:           str = "free"
     provider:         Literal["claude", "mistral"] = "claude"
 
-_LAYOUT_LABELS: dict[str, str] = {
-    "glassmorphism":   "Glassmorphism SaaS — frosted glass, blur, semi-transparent dark panels, glow accents",
-    "swiss_grid":      "Swiss Grid — strict typographic grid, clean geometry, bold sans-serif, high contrast",
-    "editorial":       "Editorial Magazine — editorial layout, varied type sizes, strong visual hierarchy, photo-ready rects",
-    "data_journalism": "Data Journalism — data-forward, clear chart placeholder zones, minimal, dominant white space",
-    "free":            "Free Modern Design — balanced, polished, professionally designed",
+LAYOUT_MAP: dict[str, str | None] = {
+    "free":           None,
+    "glassmorphism":  "ppt169_glassmorphism_demo",
+    "swiss_grid":     "ppt169_swiss_grid_systems",
+    "editorial":      "ppt169_pritzker_2026",
+    "data":           "ppt169_global_ai_capital_2026",
+    "brutalist":      "ppt169_brutalist_ai_newspaper_2026",
+    "blueprint":      "ppt169_kubernetes_blueprint_2026",
+    "dark_tech":      "ppt169_building_effective_agents",
+    "consulting":     "ppt169_kimsoong_loyalty_programme",
+    "showcase":       "ppt169_image_text_showcase",
+    "magazine":       "ppt169_home_design_trends_2026",
+    "attention":      "ppt169_attention_is_all_you_need",
+    "cangzhuo":       "ppt169_cangzhuo",
+    "fashion":        "ppt169_fashion_weekly_digest",
+    "general_dark":   "ppt169_general_dark_tech_claude_code_auto_mode",
+    "high_rise":      "ppt169_high_rise_renewal",
+    "lin_huiyin":     "ppt169_lin_huiyin_architect",
+    "lin_huiyin_rev": "ppt169_lin_huiyin_architect_revised",
+    "liziqi":         "ppt169_liziqi_plant_dye_colors",
+    "lora":           "ppt169_lora_hu_2021",
+    "sugar_rush":     "ppt169_sugar_rush_memphis",
+    "zine":           "ppt169_indie_bookstore_zine_guide",
 }
+
+_LAYOUTS: list[dict] = [
+    {"id": "free",          "label": "Design libre IA",       "sublabel": "L'IA compose librement selon votre charte",  "color": "#6366F1"},
+    {"id": "glassmorphism", "label": "Glassmorphism SaaS",    "sublabel": "Moderne, translucide, product UI",           "color": "#0EA5E9"},
+    {"id": "swiss_grid",    "label": "Swiss Grid",            "sublabel": "Typographique, structuré, épuré",            "color": "#EF4444"},
+    {"id": "editorial",     "label": "Editorial Magazine",    "sublabel": "Photographique, aéré, premium",              "color": "#1E293B"},
+    {"id": "data",          "label": "Data Journalism",       "sublabel": "Sombre, graphiques, Bloomberg-style",        "color": "#0F172A"},
+    {"id": "brutalist",     "label": "Brutalist",             "sublabel": "Impact fort, typographie dense",             "color": "#DC2626"},
+    {"id": "blueprint",     "label": "Blueprint Tech",        "sublabel": "Schémas, isométrique, IT",                   "color": "#0891B2"},
+    {"id": "dark_tech",     "label": "Dark Tech",             "sublabel": "Sombre, tech, consulting digital",           "color": "#1E293B"},
+    {"id": "consulting",    "label": "Corporate Consulting",  "sublabel": "Sobre, conseil, corporate propre",           "color": "#334155"},
+    {"id": "showcase",      "label": "Editorial Showcase",    "sublabel": "Riche en images, mise en page moderne",      "color": "#7C3AED"},
+    {"id": "magazine",      "label": "Magazine Tendances",    "sublabel": "Lifestyle premium, visuels forts",           "color": "#BE185D"},
+    {"id": "attention",     "label": "Academic Blueprint",    "sublabel": "Research, schémas, académique",              "color": "#F59E0B"},
+    {"id": "cangzhuo",      "label": "Chinese Ink Aesthetic", "sublabel": "Encre, minimalisme, culture",                "color": "#78716C"},
+    {"id": "fashion",       "label": "Fashion Editorial",     "sublabel": "Mode, luxe, magazine",                      "color": "#EC4899"},
+    {"id": "general_dark",  "label": "Dark Tech Général",     "sublabel": "Dark theme généraliste, tech",              "color": "#1E293B"},
+    {"id": "high_rise",     "label": "Architecture Urbaine",  "sublabel": "Editorial, urban renewal",                   "color": "#64748B"},
+    {"id": "lin_huiyin",    "label": "Portrait Culturel",     "sublabel": "Biographie, culture, photo",                 "color": "#92400E"},
+    {"id": "lin_huiyin_rev","label": "Portrait Culturel v2",  "sublabel": "Version révisée",                            "color": "#92400E"},
+    {"id": "liziqi",        "label": "Nature & Couleurs",     "sublabel": "Couleurs naturelles, artisanat",             "color": "#16A34A"},
+    {"id": "lora",          "label": "Technical Paper",       "sublabel": "Académique, technique, dense",               "color": "#6366F1"},
+    {"id": "sugar_rush",    "label": "Memphis Pop",           "sublabel": "Coloré, playful, énergie",                   "color": "#F97316"},
+    {"id": "zine",          "label": "Risograph Zine",        "sublabel": "Duotone, artisanal, culture",                "color": "#84CC16"},
+]
+
+_LAYOUTS_BY_ID: dict[str, dict] = {l["id"]: l for l in _LAYOUTS}
 
 # ─────────────────────────────────────────────
 # APP
@@ -95,6 +140,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────
+# LAYOUTS ENDPOINT
+# ─────────────────────────────────────────────
+
+@app.get("/layouts")
+async def list_layouts():
+    return _LAYOUTS
 
 # ─────────────────────────────────────────────
 # SKILL FILE LOADER
@@ -117,7 +170,7 @@ You run in HEADLESS API MODE — skip all BLOCKING stops, browser UIs, and inter
 Auto-approve all Eight Confirmations using the parameters provided.
 
 Your task: produce ONLY design_spec.md and spec_lock.md for the requested presentation.
-
+{design_example_section}
 REFERENCE — spec_lock.md skeleton (follow this EXACTLY):
 {spec_lock_ref}
 
@@ -395,10 +448,30 @@ async def generate_pptx(req: GenerateRequest):
     n_pad  = str(n).zfill(2)
     extra  = f"\nADDITIONAL INSTRUCTIONS:\n{req.prompt_injection}" if req.prompt_injection else ""
 
+    # ── LAYOUT EXAMPLE REFERENCE ─────────────────────────────
+    layout_key    = req.layout or "free"
+    layout_folder = LAYOUT_MAP.get(layout_key)
+    layout_info   = _LAYOUTS_BY_ID.get(layout_key, _LAYOUTS[0])
+    layout_label  = f"{layout_info['label']} — {layout_info['sublabel']}"
+
+    design_example_section = ""
+    if layout_folder:
+        example_spec_path = EXAMPLES_DIR / layout_folder / "design_spec.md"
+        if example_spec_path.exists():
+            example_text = example_spec_path.read_text(encoding="utf-8")[:3500]
+            _write(project_dir, "design_spec_reference.md", example_text)
+            design_example_section = (
+                "\nVISUAL STYLE REFERENCE — reproduce this exact design language, "
+                "adapted to the new content below:\n"
+                f"{example_text}\n"
+            )
+            logger.info("[%s] Layout reference loaded: %s", job_id, layout_folder)
+
     # ── PHASE A : STRATEGIST ──────────────────────────────────
     sys_a = _STRATEGIST_SYSTEM.format(
         spec_lock_ref=_skill("templates/spec_lock_reference.md",   4000),
         shared_standards=_skill("references/shared-standards.md", 3000),
+        design_example_section=design_example_section,
     )
     usr_a = _STRATEGIST_USER.format(
         content=req.content,
@@ -427,7 +500,6 @@ async def generate_pptx(req: GenerateRequest):
         shared_standards=_skill("references/shared-standards.md", 2000),
         slides_count_padded=n_pad,
     )
-    layout_label = _LAYOUT_LABELS.get(req.layout or "free", _LAYOUT_LABELS["free"])
     usr_b = _EXECUTOR_USER.format(
         slides_count=n,
         slides_count_minus_1=n - 1,
@@ -528,7 +600,7 @@ async def root():
         "service": "traitement_pptmaster",
         "status":  "ok",
         "version": "1.0.0",
-        "endpoints": ["POST /generate-pptx"],
+        "endpoints": ["GET /layouts", "POST /generate-pptx"],
     }
 
 
