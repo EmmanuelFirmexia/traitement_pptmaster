@@ -135,12 +135,32 @@ _LAYOUTS_BY_ID: dict[str, dict] = {l["id"]: l for l in _LAYOUTS}
 # JOB STORE
 # ─────────────────────────────────────────────
 
-_jobs: dict[str, dict] = {}
+JOBS_FILE = "/tmp/pptmaster_jobs.json"
+
+
+def _load_jobs() -> dict:
+    if os.path.exists(JOBS_FILE):
+        try:
+            with open(JOBS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_job(job_id: str, data: dict) -> None:
+    jobs = _load_jobs()
+    jobs[job_id] = data
+    with open(JOBS_FILE, "w") as f:
+        json.dump(jobs, f)
 
 
 def _set_job(job_id: str, **kwargs: object) -> None:
-    if job_id in _jobs:
-        _jobs[job_id].update(kwargs)
+    jobs = _load_jobs()
+    if job_id in jobs:
+        jobs[job_id].update(kwargs)
+        with open(JOBS_FILE, "w") as f:
+            json.dump(jobs, f)
 
 # ─────────────────────────────────────────────
 # APP
@@ -644,13 +664,13 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
 async def start_generate(req: GenerateRequest):
     """Start async pipeline — returns job_id immediately for polling."""
     job_id = uuid.uuid4().hex[:8]
-    _jobs[job_id] = {
+    _save_job(job_id, {
         "status":   "running",
         "step":     0,
         "progress": 2,
         "result":   None,
         "error":    None,
-    }
+    })
     asyncio.create_task(_pipeline(job_id, req))
     logger.info("[%s] Job created, background task started", job_id)
     return {"job_id": job_id}
@@ -659,7 +679,7 @@ async def start_generate(req: GenerateRequest):
 @app.get("/generate-pptx/{job_id}")
 async def poll_generate(job_id: str):
     """Poll job status. Returns step (0-3), progress (0-100), status, result."""
-    job = _jobs.get(job_id)
+    job = _load_jobs().get(job_id)
     if not job:
         raise HTTPException(404, f"Job {job_id!r} not found")
     return job
