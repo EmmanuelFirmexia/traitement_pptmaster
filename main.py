@@ -357,14 +357,35 @@ def _extract_json_safe(raw: str) -> str:
 
 
 def _parse_strategist(raw: str) -> tuple[str, str]:
-    """Parse Strategist response using DESIGN_SPEC / SPEC_LOCK text markers."""
-    m_spec = re.search(r"DESIGN_SPEC_START\n(.*?)\nDESIGN_SPEC_END", raw, re.DOTALL)
-    m_lock = re.search(r"SPEC_LOCK_START\n(.*?)\nSPEC_LOCK_END", raw, re.DOTALL)
-    if not m_spec or not m_lock:
+    """Parse Strategist response using DESIGN_SPEC / SPEC_LOCK text markers.
+
+    Tolerant: missing END markers fall back to the next START or end-of-string.
+    """
+    ds_start = raw.find("DESIGN_SPEC_START")
+    sl_start = raw.find("SPEC_LOCK_START")
+
+    if ds_start == -1 or sl_start == -1:
         raise ValueError(
             f"Strategist markers not found. Raw (first 400 chars): {raw[:400]}"
         )
-    return m_spec.group(1).strip(), m_lock.group(1).strip()
+
+    ds_end = raw.find("DESIGN_SPEC_END")
+    if ds_end == -1:
+        ds_end = sl_start  # fallback: everything before SPEC_LOCK_START
+
+    sl_end = raw.find("SPEC_LOCK_END")
+    if sl_end == -1:
+        sl_end = len(raw)  # fallback: to end of string
+
+    design_spec = raw[ds_start + len("DESIGN_SPEC_START"):ds_end].strip()
+    spec_lock   = raw[sl_start + len("SPEC_LOCK_START"):sl_end].strip()
+
+    if not design_spec or not spec_lock:
+        raise ValueError(
+            f"Empty design_spec or spec_lock after parsing. Raw (first 400 chars): {raw[:400]}"
+        )
+
+    return design_spec, spec_lock
 
 
 def _parse_executor(raw: str) -> dict[str, str]:
