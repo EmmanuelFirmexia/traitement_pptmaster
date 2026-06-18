@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -614,28 +615,47 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         layout_label  = f"{layout_info['label']} — {layout_info['sublabel']}"
 
         design_example_section = ""
+        spec_lock_path: Path | None = None  # tracks example spec_lock for Phase B override
         if layout_folder:
-            example_spec_path = EXAMPLES_DIR / layout_folder / "design_spec.md"
+            example_dir       = EXAMPLES_DIR / layout_folder
+            example_spec_path = example_dir / "design_spec.md"
+            spec_lock_path    = example_dir / "spec_lock.md"
+
             if example_spec_path.exists():
                 example_text = example_spec_path.read_text(encoding="utf-8")
                 logger.info("[%s] design_spec_reference length: %d chars", job_id, len(example_text))
                 _write(project_dir, "design_spec_reference.md", example_text)
-                design_example_section = f"""
-VISUAL STYLE REFERENCE — MANDATORY:
-You MUST reproduce this exact design language in every slide.
-This is not optional — the visual style below defines the ONLY
-acceptable aesthetic for this presentation.
-Colors, typography, layout patterns, and visual effects
-described below are binding constraints, not suggestions.
 
+                spec_lock_reference = ""
+                if spec_lock_path.exists():
+                    spec_lock_reference = spec_lock_path.read_text(encoding="utf-8")
+                    logger.info("[%s] spec_lock_reference length: %d chars",
+                                job_id, len(spec_lock_reference))
+
+                design_example_section = f"""
+VISUAL STYLE REFERENCE — MANDATORY BINDING CONTRACT:
+
+The following spec_lock.md defines the EXACT visual language
+you MUST use. Copy colors, fonts, layout patterns verbatim.
+Do NOT invent new colors or styles.
+
+DESIGN SPEC (narrative reference):
 {example_text}
 
-END OF VISUAL STYLE REFERENCE.
-Every slide MUST visually match this reference.
+SPEC LOCK (binding execution contract — copy exactly):
+{spec_lock_reference}
+
+Your output spec_lock.md MUST replicate these exact values:
+- Same color palette (hex codes verbatim)
+- Same typography (font families verbatim)
+- Same layout patterns
+- Same visual effects (glassmorphism, grid, etc.)
+Only the CONTENT (texts, data) changes. The STYLE is locked.
 """
             else:
                 logger.warning("[%s] design_spec.md not found in %s", job_id, layout_folder)
                 logger.info("[%s] Layout reference: %s", job_id, layout_folder)
+                spec_lock_path = None  # no reference found — skip Phase B override
 
         # ── Phase A : Strategist ──────────────────────────────
         _set_job(job_id, step=0, progress=5)
@@ -681,6 +701,14 @@ Every slide MUST visually match this reference.
         _set_job(job_id, step=1, progress=30)
 
         # ── Phase B : Executor ────────────────────────────────
+        # Override spec_lock.md with example's locked version so Executor
+        # uses exact colors/fonts from the reference, not the Strategist's guess.
+        if spec_lock_path is not None and spec_lock_path.exists():
+            shutil.copy(spec_lock_path, project_dir / "spec_lock.md")
+            spec_lock_md = spec_lock_path.read_text(encoding="utf-8")
+            logger.info("[%s] spec_lock overridden with example (%d chars)",
+                        job_id, len(spec_lock_md))
+
         sys_b = _EXECUTOR_SYSTEM.format(
             executor_base=_skill("references/executor-base.md", 3000),
             shared_standards=_skill("references/shared-standards.md", 2000),
