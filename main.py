@@ -206,10 +206,22 @@ def _skill(rel: str, max_chars: int = 0) -> str:
 
 CONTENT_MODE_INSTRUCTIONS: dict[str, str] = {
     "strict": """
-CONTENT FIDELITY (STRICT MODE):
-Reproduce source text verbatim on every slide.
-Do NOT rewrite, summarize, paraphrase, or editorialize.
-Use exact words, numbers, and structure from source.
+STRICT MODE — ABSOLUTE RULE:
+Every word, number, bullet point, and punctuation mark from the source
+content MUST appear in the slides exactly as written.
+NO rewriting. NO summarizing. NO paraphrasing. NO editorializing.
+NO invented titles. NO added context. NO "improved" phrasing.
+
+If the source says "Génération IA de présentations 16:9 prêtes à envoyer aux prospects"
+the slide MUST say exactly "Génération IA de présentations 16:9 prêtes à envoyer aux prospects"
+— not "Génération automatique", not "Présentations IA", not any variation.
+
+Your ONLY creative freedom in STRICT MODE is:
+- Which slide each piece of content goes on
+- The visual layout of that content on the slide
+- Nothing else.
+
+Violation of this rule = generation failure.
 """.strip(),
     "marketing": """
 CONTENT MODE (MARKETING):
@@ -726,7 +738,16 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             extra=extra,
         )
 
-        logger.info("[%s] Phase B — Executor", job_id)
+        if req.content_mode == "strict":
+            executor_strict = """
+STRICT MODE ACTIVE:
+Reproduce source text verbatim in every SVG text element.
+Do not change a single word from the Strategist's content outline.
+Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
+"""
+            sys_b = executor_strict.strip() + "\n\n" + sys_b
+
+        logger.info("[%s] Phase B — Executor content_mode=%s", job_id, req.content_mode)
         raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
         await _log_ai_usage(req.tenant_id, "pptmaster_executor", "claude-sonnet-4-6", pt_b, ct_b)
