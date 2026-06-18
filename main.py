@@ -444,11 +444,18 @@ async def upload_to_supabase(pptx_bytes: bytes, tenant_id: str, title: str) -> s
 async def _sb_upsert_document(
     tenant_id: str,
     titre: str,
-    format: str,
-    design: str,
     pptx_url: str,
-    html_content: str | None,
+    svg_slides: list | None,
 ) -> str:
+    payload = {
+        "tenant_id":   tenant_id,
+        "titre":       titre,
+        "format":      "paysage",
+        "design":      "ppt-master",
+        "provider":    "claude",
+        "pptx_url":    pptx_url,
+        "html_output": json.dumps(svg_slides) if svg_slides else None,
+    }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{SUPABASE_URL}/rest/v1/studio_documents",
@@ -458,14 +465,7 @@ async def _sb_upsert_document(
                 "Content-Type":  "application/json",
                 "Prefer":        "return=representation",
             },
-            json={
-                "tenant_id":    tenant_id,
-                "titre":        titre,
-                "format":       format,
-                "design":       design,
-                "pptx_url":     pptx_url,
-                "html_content": html_content,
-            },
+            json=payload,
         )
         r.raise_for_status()
         return r.json()[0]["id"]
@@ -597,9 +597,8 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
             raise ValueError("svg_to_pptx.py produced no PPTX")
 
         pptx         = exports[0]
-        pptx_bytes   = pptx.read_bytes()
-        pptx_b64     = base64.b64encode(pptx_bytes).decode("utf-8")
-        html_content = json.dumps(svg_slides, ensure_ascii=False) if svg_slides else None
+        pptx_bytes  = pptx.read_bytes()
+        pptx_b64    = base64.b64encode(pptx_bytes).decode("utf-8")
 
         title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
         pptx_url    = ""
@@ -611,10 +610,8 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
                 document_id = await _sb_upsert_document(
                     tenant_id=req.tenant_id,
                     titre=title,
-                    format="paysage",
-                    design="ppt-master",
                     pptx_url=pptx_url,
-                    html_content=html_content,
+                    svg_slides=svg_slides,
                 )
                 logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
             except Exception as e:
