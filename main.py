@@ -620,11 +620,19 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
                 example_text = example_spec_path.read_text(encoding="utf-8")
                 logger.info("[%s] design_spec_reference length: %d chars", job_id, len(example_text))
                 _write(project_dir, "design_spec_reference.md", example_text)
-                design_example_section = (
-                    "\nVISUAL STYLE REFERENCE — reproduce this exact design language, "
-                    "adapted to the new content below:\n"
-                    f"{example_text}\n"
-                )
+                design_example_section = f"""
+VISUAL STYLE REFERENCE — MANDATORY:
+You MUST reproduce this exact design language in every slide.
+This is not optional — the visual style below defines the ONLY
+acceptable aesthetic for this presentation.
+Colors, typography, layout patterns, and visual effects
+described below are binding constraints, not suggestions.
+
+{example_text}
+
+END OF VISUAL STYLE REFERENCE.
+Every slide MUST visually match this reference.
+"""
             else:
                 logger.warning("[%s] design_spec.md not found in %s", job_id, layout_folder)
                 logger.info("[%s] Layout reference: %s", job_id, layout_folder)
