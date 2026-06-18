@@ -496,6 +496,7 @@ async def _sb_upsert_document(
     titre: str,
     pptx_url: str,
     svg_slides: list | None,
+    layout: str = "free",
 ) -> str:
     payload = {
         "tenant_id":   tenant_id,
@@ -505,6 +506,7 @@ async def _sb_upsert_document(
         "provider":    "claude",
         "pptx_url":    pptx_url,
         "html_output": json.dumps(svg_slides),
+        "layout":      layout,
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
@@ -671,6 +673,7 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
                     titre=title,
                     pptx_url=pptx_url,
                     svg_slides=svg_slides,
+                    layout=req.layout or "free",
                 )
                 logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
             except Exception as e:
