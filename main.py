@@ -311,7 +311,7 @@ Instructions:
 # LLM CALLERS
 # ─────────────────────────────────────────────
 
-def _claude_call(system: str, user: str, max_tokens: int = 8192) -> str:
+def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     full_response = ""
     with client.messages.stream(
@@ -322,7 +322,10 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> str:
     ) as stream:
         for text in stream.text_stream:
             full_response += text
-    return full_response
+        final             = stream.get_final_message()
+        prompt_tokens     = final.usage.input_tokens
+        completion_tokens = final.usage.output_tokens
+    return full_response, prompt_tokens, completion_tokens
 
 
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
@@ -346,14 +349,41 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
         return r.json()["choices"][0]["message"]["content"]
 
 
-async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) -> str:
+async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
     if provider == "claude":
-        # Run blocking Claude call in thread pool so polling requests stay responsive
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, functools.partial(_claude_call, system, user, max_tokens)
         )
-    return await _mistral_call(system, user, max_tokens)
+    text = await _mistral_call(system, user, max_tokens)
+    return text, 0, 0
+
+
+async def _log_ai_usage(tenant_id: str, action: str, model: str,
+                        prompt_tokens: int, completion_tokens: int) -> None:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/tenant_ai_usage",
+                headers={
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    "apikey":        SUPABASE_SERVICE_KEY,
+                    "Content-Type":  "application/json",
+                },
+                json={
+                    "tenant_id":         tenant_id,
+                    "action_type":       action,
+                    "model":             model,
+                    "prompt_tokens":     prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens":      prompt_tokens + completion_tokens,
+                    "provider":          "anthropic",
+                },
+            )
+    except Exception as e:
+        logger.warning("AI usage log failed: %s", e)
 
 # ─────────────────────────────────────────────
 # RESPONSE PARSERS
@@ -554,7 +584,9 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         )
 
         logger.info("[%s] Phase A — Strategist", job_id)
-        raw_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
+        raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
+        logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
+        await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
         design_spec_md, spec_lock_md = _parse_strategist(raw_a)
         _write(project_dir, "design_spec.md", design_spec_md)
         _write(project_dir, "spec_lock.md",   spec_lock_md)
@@ -579,7 +611,9 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         )
 
         logger.info("[%s] Phase B — Executor", job_id)
-        raw_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
+        raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
+        logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
+        await _log_ai_usage(req.tenant_id, "pptmaster_executor", "claude-sonnet-4-6", pt_b, ct_b)
         svg_files = _parse_executor(raw_b)
 
         if not svg_files:
