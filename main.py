@@ -577,15 +577,17 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         await _run_async("svg_to_pptx.py",    project_dir)
         _set_job(job_id, step=3, progress=90)
 
-        # ── Collect final SVG slides ──────────────────────────
-        svg_final_dir  = project_dir / "svg_final"
-        svg_output_dir = project_dir / "svg_output"
-        svg_source     = svg_final_dir if list(svg_final_dir.glob("*.svg")) else svg_output_dir
-        svg_slides     = [
-            {"filename": p.name, "content": p.read_text(encoding="utf-8")}
-            for p in sorted(svg_source.glob("*.svg"))
-        ]
-        logger.info("[%s] %d SVG slides collected from %s", job_id, len(svg_slides), svg_source.name)
+        # ── Collect SVG slides (svg_output first, then svg_final) ────────────
+        svg_slides: list[str] = []
+        for _svg_dir_name in ("svg_output", "svg_final"):
+            _svg_dir   = project_dir / _svg_dir_name
+            _svg_files = sorted(_svg_dir.glob("*.svg")) if _svg_dir.exists() else []
+            if _svg_files:
+                svg_slides = [p.read_text(encoding="utf-8") for p in _svg_files]
+                logger.info("[%s] %d SVG slides from %s", job_id, len(svg_slides), _svg_dir_name)
+                break
+        if not svg_slides:
+            logger.warning("[%s] No SVG slides found in svg_output or svg_final", job_id)
 
         # ── Find PPTX ─────────────────────────────────────────
         exports = sorted(
