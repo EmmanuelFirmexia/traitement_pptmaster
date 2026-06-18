@@ -8,7 +8,9 @@ Pipeline (headless, non-interactive):
   Phase C – Scripts              → finalize_svg.py → svg_to_pptx.py → PPTX
 """
 
+import asyncio
 import base64
+import functools
 import json
 import logging
 import os
@@ -32,11 +34,11 @@ load_dotenv()
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-SKILL_DIR   = Path(__file__).parent / "skills" / "ppt-master"
-SCRIPTS_DIR = SKILL_DIR / "scripts"
-PROJECTS_DIR  = Path(__file__).parent / "projects"
+SKILL_DIR    = Path(__file__).parent / "skills" / "ppt-master"
+SCRIPTS_DIR  = SKILL_DIR / "scripts"
+PROJECTS_DIR = Path(__file__).parent / "projects"
 PROJECTS_DIR.mkdir(exist_ok=True)
-EXAMPLES_DIR  = Path(__file__).parent / "examples"
+EXAMPLES_DIR = Path(__file__).parent / "examples"
 
 SUPABASE_URL         = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -67,11 +69,15 @@ class GenerateRequest(BaseModel):
     prompt_injection: str = ""
     style:            str = "professional"
     palette:          Palette
-    slides_count:     int = 10
+    slides_count:     int = 6
     tenant_id:        str
     title:            str = ""
     layout:           str = "free"
     provider:         Literal["claude", "mistral"] = "claude"
+
+# ─────────────────────────────────────────────
+# LAYOUT CATALOGUE
+# ─────────────────────────────────────────────
 
 LAYOUT_MAP: dict[str, str | None] = {
     "free":           None,
@@ -99,31 +105,42 @@ LAYOUT_MAP: dict[str, str | None] = {
 }
 
 _LAYOUTS: list[dict] = [
-    {"id": "free",          "label": "Design libre IA",       "sublabel": "L'IA compose librement selon votre charte",  "color": "#6366F1"},
-    {"id": "glassmorphism", "label": "Glassmorphism SaaS",    "sublabel": "Moderne, translucide, product UI",           "color": "#0EA5E9"},
-    {"id": "swiss_grid",    "label": "Swiss Grid",            "sublabel": "Typographique, structuré, épuré",            "color": "#EF4444"},
-    {"id": "editorial",     "label": "Editorial Magazine",    "sublabel": "Photographique, aéré, premium",              "color": "#1E293B"},
-    {"id": "data",          "label": "Data Journalism",       "sublabel": "Sombre, graphiques, Bloomberg-style",        "color": "#0F172A"},
-    {"id": "brutalist",     "label": "Brutalist",             "sublabel": "Impact fort, typographie dense",             "color": "#DC2626"},
-    {"id": "blueprint",     "label": "Blueprint Tech",        "sublabel": "Schémas, isométrique, IT",                   "color": "#0891B2"},
-    {"id": "dark_tech",     "label": "Dark Tech",             "sublabel": "Sombre, tech, consulting digital",           "color": "#1E293B"},
-    {"id": "consulting",    "label": "Corporate Consulting",  "sublabel": "Sobre, conseil, corporate propre",           "color": "#334155"},
-    {"id": "showcase",      "label": "Editorial Showcase",    "sublabel": "Riche en images, mise en page moderne",      "color": "#7C3AED"},
-    {"id": "magazine",      "label": "Magazine Tendances",    "sublabel": "Lifestyle premium, visuels forts",           "color": "#BE185D"},
-    {"id": "attention",     "label": "Academic Blueprint",    "sublabel": "Research, schémas, académique",              "color": "#F59E0B"},
-    {"id": "cangzhuo",      "label": "Chinese Ink Aesthetic", "sublabel": "Encre, minimalisme, culture",                "color": "#78716C"},
-    {"id": "fashion",       "label": "Fashion Editorial",     "sublabel": "Mode, luxe, magazine",                      "color": "#EC4899"},
-    {"id": "general_dark",  "label": "Dark Tech Général",     "sublabel": "Dark theme généraliste, tech",              "color": "#1E293B"},
-    {"id": "high_rise",     "label": "Architecture Urbaine",  "sublabel": "Editorial, urban renewal",                   "color": "#64748B"},
-    {"id": "lin_huiyin",    "label": "Portrait Culturel",     "sublabel": "Biographie, culture, photo",                 "color": "#92400E"},
-    {"id": "lin_huiyin_rev","label": "Portrait Culturel v2",  "sublabel": "Version révisée",                            "color": "#92400E"},
-    {"id": "liziqi",        "label": "Nature & Couleurs",     "sublabel": "Couleurs naturelles, artisanat",             "color": "#16A34A"},
-    {"id": "lora",          "label": "Technical Paper",       "sublabel": "Académique, technique, dense",               "color": "#6366F1"},
-    {"id": "sugar_rush",    "label": "Memphis Pop",           "sublabel": "Coloré, playful, énergie",                   "color": "#F97316"},
-    {"id": "zine",          "label": "Risograph Zine",        "sublabel": "Duotone, artisanal, culture",                "color": "#84CC16"},
+    {"id": "free",           "label": "Design libre IA",       "sublabel": "L'IA compose librement selon votre charte",  "color": "#6366F1"},
+    {"id": "glassmorphism",  "label": "Glassmorphism SaaS",    "sublabel": "Moderne, translucide, product UI",           "color": "#0EA5E9"},
+    {"id": "swiss_grid",     "label": "Swiss Grid",            "sublabel": "Typographique, structuré, épuré",            "color": "#EF4444"},
+    {"id": "editorial",      "label": "Editorial Magazine",    "sublabel": "Photographique, aéré, premium",              "color": "#1E293B"},
+    {"id": "data",           "label": "Data Journalism",       "sublabel": "Sombre, graphiques, Bloomberg-style",        "color": "#0F172A"},
+    {"id": "brutalist",      "label": "Brutalist",             "sublabel": "Impact fort, typographie dense",             "color": "#DC2626"},
+    {"id": "blueprint",      "label": "Blueprint Tech",        "sublabel": "Schémas, isométrique, IT",                   "color": "#0891B2"},
+    {"id": "dark_tech",      "label": "Dark Tech",             "sublabel": "Sombre, tech, consulting digital",           "color": "#1E293B"},
+    {"id": "consulting",     "label": "Corporate Consulting",  "sublabel": "Sobre, conseil, corporate propre",           "color": "#334155"},
+    {"id": "showcase",       "label": "Editorial Showcase",    "sublabel": "Riche en images, mise en page moderne",      "color": "#7C3AED"},
+    {"id": "magazine",       "label": "Magazine Tendances",    "sublabel": "Lifestyle premium, visuels forts",           "color": "#BE185D"},
+    {"id": "attention",      "label": "Academic Blueprint",    "sublabel": "Research, schémas, académique",              "color": "#F59E0B"},
+    {"id": "cangzhuo",       "label": "Chinese Ink Aesthetic", "sublabel": "Encre, minimalisme, culture",                "color": "#78716C"},
+    {"id": "fashion",        "label": "Fashion Editorial",     "sublabel": "Mode, luxe, magazine",                      "color": "#EC4899"},
+    {"id": "general_dark",   "label": "Dark Tech Général",     "sublabel": "Dark theme généraliste, tech",              "color": "#1E293B"},
+    {"id": "high_rise",      "label": "Architecture Urbaine",  "sublabel": "Editorial, urban renewal",                   "color": "#64748B"},
+    {"id": "lin_huiyin",     "label": "Portrait Culturel",     "sublabel": "Biographie, culture, photo",                 "color": "#92400E"},
+    {"id": "lin_huiyin_rev", "label": "Portrait Culturel v2",  "sublabel": "Version révisée",                            "color": "#92400E"},
+    {"id": "liziqi",         "label": "Nature & Couleurs",     "sublabel": "Couleurs naturelles, artisanat",             "color": "#16A34A"},
+    {"id": "lora",           "label": "Technical Paper",       "sublabel": "Académique, technique, dense",               "color": "#6366F1"},
+    {"id": "sugar_rush",     "label": "Memphis Pop",           "sublabel": "Coloré, playful, énergie",                   "color": "#F97316"},
+    {"id": "zine",           "label": "Risograph Zine",        "sublabel": "Duotone, artisanal, culture",                "color": "#84CC16"},
 ]
 
 _LAYOUTS_BY_ID: dict[str, dict] = {l["id"]: l for l in _LAYOUTS}
+
+# ─────────────────────────────────────────────
+# JOB STORE
+# ─────────────────────────────────────────────
+
+_jobs: dict[str, dict] = {}
+
+
+def _set_job(job_id: str, **kwargs: object) -> None:
+    if job_id in _jobs:
+        _jobs[job_id].update(kwargs)
 
 # ─────────────────────────────────────────────
 # APP
@@ -311,7 +328,11 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
 
 async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) -> str:
     if provider == "claude":
-        return _claude_call(system, user, max_tokens)
+        # Run blocking Claude call in thread pool so polling requests stay responsive
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, functools.partial(_claude_call, system, user, max_tokens)
+        )
     return await _mistral_call(system, user, max_tokens)
 
 # ─────────────────────────────────────────────
@@ -347,7 +368,7 @@ def _parse_strategist(raw: str) -> tuple[str, str]:
 
 
 def _parse_executor(raw: str) -> dict[str, str]:
-    """Parse Executor JSON array of {{path, content}} objects."""
+    """Parse Executor JSON array of {path, content} objects."""
     data = json.loads(_extract_json_safe(raw))
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array of {path, content} objects")
@@ -364,7 +385,7 @@ def _write(project_dir: Path, rel: str, content: str) -> None:
     logger.info("wrote %s", path.relative_to(project_dir))
 
 
-def _run(script: str, project_dir: Path) -> None:
+def _run_script(script: str, project_dir: Path) -> None:
     cmd = [sys.executable, str(SCRIPTS_DIR / script), str(project_dir)]
     logger.info("run: %s", " ".join(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(SCRIPTS_DIR))
@@ -372,6 +393,11 @@ def _run(script: str, project_dir: Path) -> None:
         logger.info("[%s stdout] %s", script, r.stdout[:500])
     if r.returncode != 0:
         logger.warning("[%s stderr] %s", script, r.stderr[:500])
+
+
+async def _run_async(script: str, project_dir: Path) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, functools.partial(_run_script, script, project_dir))
 
 # ─────────────────────────────────────────────
 # SUPABASE HELPERS
@@ -424,171 +450,199 @@ async def _sb_upsert_document(
         return r.json()[0]["id"]
 
 # ─────────────────────────────────────────────
-# ROUTE — POST /generate-pptx
+# PIPELINE (background task)
+# ─────────────────────────────────────────────
+
+async def _pipeline(job_id: str, req: GenerateRequest) -> None:
+    """
+    Full async pipeline — runs as a background task.
+    Progress updates are written to _jobs[job_id] for polling.
+    """
+    try:
+        proj_name   = f"ppt_{req.tenant_id[:8]}_{job_id}"
+        project_dir = PROJECTS_DIR / proj_name
+
+        for sub in ["svg_output", "notes", "exports", "images", "svg_final"]:
+            (project_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        logger.info("[%s] START provider=%s slides=%d layout=%s",
+                    job_id, req.provider, req.slides_count, req.layout)
+
+        n     = req.slides_count
+        n_pad = str(n).zfill(2)
+        extra = f"\nADDITIONAL INSTRUCTIONS:\n{req.prompt_injection}" if req.prompt_injection else ""
+
+        # ── Layout reference ──────────────────────────────────
+        layout_key    = req.layout or "free"
+        layout_folder = LAYOUT_MAP.get(layout_key)
+        layout_info   = _LAYOUTS_BY_ID.get(layout_key, _LAYOUTS[0])
+        layout_label  = f"{layout_info['label']} — {layout_info['sublabel']}"
+
+        design_example_section = ""
+        if layout_folder:
+            example_spec_path = EXAMPLES_DIR / layout_folder / "design_spec.md"
+            if example_spec_path.exists():
+                example_text = example_spec_path.read_text(encoding="utf-8")[:3500]
+                _write(project_dir, "design_spec_reference.md", example_text)
+                design_example_section = (
+                    "\nVISUAL STYLE REFERENCE — reproduce this exact design language, "
+                    "adapted to the new content below:\n"
+                    f"{example_text}\n"
+                )
+                logger.info("[%s] Layout reference: %s", job_id, layout_folder)
+
+        # ── Phase A : Strategist ──────────────────────────────
+        _set_job(job_id, step=0, progress=5)
+
+        sys_a = _STRATEGIST_SYSTEM.format(
+            spec_lock_ref=_skill("templates/spec_lock_reference.md",   4000),
+            shared_standards=_skill("references/shared-standards.md", 3000),
+            design_example_section=design_example_section,
+        )
+        usr_a = _STRATEGIST_USER.format(
+            content=req.content,
+            slides_count=n,
+            style=req.style,
+            primary=req.palette.primary,
+            secondary=req.palette.secondary,
+            accent=req.palette.accent,
+            extra=extra,
+        )
+
+        logger.info("[%s] Phase A — Strategist", job_id)
+        raw_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
+        design_spec_md, spec_lock_md = _parse_strategist(raw_a)
+        _write(project_dir, "design_spec.md", design_spec_md)
+        _write(project_dir, "spec_lock.md",   spec_lock_md)
+        _set_job(job_id, step=1, progress=30)
+
+        # ── Phase B : Executor ────────────────────────────────
+        sys_b = _EXECUTOR_SYSTEM.format(
+            executor_base=_skill("references/executor-base.md", 3000),
+            shared_standards=_skill("references/shared-standards.md", 2000),
+            slides_count_padded=n_pad,
+        )
+        usr_b = _EXECUTOR_USER.format(
+            slides_count=n,
+            slides_count_minus_1=n - 1,
+            slides_count_padded=n_pad,
+            design_spec_md=design_spec_md,
+            spec_lock_md=spec_lock_md,
+            content=req.content,
+            primary=req.palette.primary,
+            layout_label=layout_label,
+            extra=extra,
+        )
+
+        logger.info("[%s] Phase B — Executor", job_id)
+        raw_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
+        svg_files = _parse_executor(raw_b)
+
+        if not svg_files:
+            raise ValueError("Executor produced no SVG files")
+
+        for rel_path, content in svg_files.items():
+            _write(project_dir, rel_path, content)
+        logger.info("[%s] %d SVG files written", job_id, len(svg_files))
+        _set_job(job_id, step=2, progress=80)
+
+        # ── Phase C : Scripts ─────────────────────────────────
+        notes_total = project_dir / "notes" / "total.md"
+        if not notes_total.exists():
+            notes_total.write_text("", encoding="utf-8")
+
+        await _run_async("total_md_split.py", project_dir)
+        await _run_async("finalize_svg.py",   project_dir)
+        await _run_async("svg_to_pptx.py",    project_dir)
+        _set_job(job_id, step=3, progress=90)
+
+        # ── Collect final SVG slides ──────────────────────────
+        svg_final_dir  = project_dir / "svg_final"
+        svg_output_dir = project_dir / "svg_output"
+        svg_source     = svg_final_dir if list(svg_final_dir.glob("*.svg")) else svg_output_dir
+        svg_slides     = [
+            {"filename": p.name, "content": p.read_text(encoding="utf-8")}
+            for p in sorted(svg_source.glob("*.svg"))
+        ]
+        logger.info("[%s] %d SVG slides collected from %s", job_id, len(svg_slides), svg_source.name)
+
+        # ── Find PPTX ─────────────────────────────────────────
+        exports = sorted(
+            (project_dir / "exports").glob("*.pptx"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not exports:
+            raise ValueError("svg_to_pptx.py produced no PPTX")
+
+        pptx         = exports[0]
+        pptx_bytes   = pptx.read_bytes()
+        pptx_b64     = base64.b64encode(pptx_bytes).decode("utf-8")
+        html_content = json.dumps(svg_slides, ensure_ascii=False) if svg_slides else None
+
+        title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
+        pptx_url    = ""
+        document_id = ""
+
+        if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+            try:
+                pptx_url    = await upload_to_supabase(pptx_bytes, req.tenant_id, title)
+                document_id = await _sb_upsert_document(
+                    tenant_id=req.tenant_id,
+                    titre=title,
+                    format="paysage",
+                    design="ppt-master",
+                    pptx_url=pptx_url,
+                    html_content=html_content,
+                )
+                logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
+            except Exception as e:
+                logger.warning("[%s] Supabase storage/DB error: %s", job_id, e)
+
+        _set_job(job_id,
+                 status="done",
+                 step=3,
+                 progress=100,
+                 result={
+                     "status":      "done",
+                     "pptx_base64": pptx_b64,
+                     "pptx_url":    pptx_url,
+                     "document_id": document_id,
+                     "svg_slides":  svg_slides,
+                 })
+        logger.info("[%s] DONE", job_id)
+
+    except Exception as e:
+        logger.error("[%s] Pipeline error: %s", job_id, e, exc_info=True)
+        _set_job(job_id, status="error", error=str(e))
+
+# ─────────────────────────────────────────────
+# ROUTES
 # ─────────────────────────────────────────────
 
 @app.post("/generate-pptx")
-async def generate_pptx(req: GenerateRequest):
-    """
-    Full PPT Master pipeline:
-      A → Strategist LLM  → design_spec.md + spec_lock.md
-      B → Executor  LLM  → SVG slides
-      C → Scripts        → finalize_svg.py + svg_to_pptx.py → PPTX
-    """
-    job_id      = uuid.uuid4().hex[:8]
-    proj_name   = f"ppt_{req.tenant_id[:8]}_{job_id}"
-    project_dir = PROJECTS_DIR / proj_name
-
-    for sub in ["svg_output", "notes", "exports", "images", "svg_final"]:
-        (project_dir / sub).mkdir(parents=True, exist_ok=True)
-
-    logger.info("[%s] START provider=%s slides=%d", job_id, req.provider, req.slides_count)
-
-    n      = req.slides_count
-    n_pad  = str(n).zfill(2)
-    extra  = f"\nADDITIONAL INSTRUCTIONS:\n{req.prompt_injection}" if req.prompt_injection else ""
-
-    # ── LAYOUT EXAMPLE REFERENCE ─────────────────────────────
-    layout_key    = req.layout or "free"
-    layout_folder = LAYOUT_MAP.get(layout_key)
-    layout_info   = _LAYOUTS_BY_ID.get(layout_key, _LAYOUTS[0])
-    layout_label  = f"{layout_info['label']} — {layout_info['sublabel']}"
-
-    design_example_section = ""
-    if layout_folder:
-        example_spec_path = EXAMPLES_DIR / layout_folder / "design_spec.md"
-        if example_spec_path.exists():
-            example_text = example_spec_path.read_text(encoding="utf-8")[:3500]
-            _write(project_dir, "design_spec_reference.md", example_text)
-            design_example_section = (
-                "\nVISUAL STYLE REFERENCE — reproduce this exact design language, "
-                "adapted to the new content below:\n"
-                f"{example_text}\n"
-            )
-            logger.info("[%s] Layout reference loaded: %s", job_id, layout_folder)
-
-    # ── PHASE A : STRATEGIST ──────────────────────────────────
-    sys_a = _STRATEGIST_SYSTEM.format(
-        spec_lock_ref=_skill("templates/spec_lock_reference.md",   4000),
-        shared_standards=_skill("references/shared-standards.md", 3000),
-        design_example_section=design_example_section,
-    )
-    usr_a = _STRATEGIST_USER.format(
-        content=req.content,
-        slides_count=n,
-        style=req.style,
-        primary=req.palette.primary,
-        secondary=req.palette.secondary,
-        accent=req.palette.accent,
-        extra=extra,
-    )
-
-    logger.info("[%s] Phase A — Strategist", job_id)
-    try:
-        raw_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
-        design_spec_md, spec_lock_md = _parse_strategist(raw_a)
-    except Exception as e:
-        logger.error("[%s] Strategist error: %s\nRaw: %s", job_id, e, raw_a[:400] if 'raw_a' in dir() else "")
-        raise HTTPException(502, f"Strategist LLM error: {e}")
-
-    _write(project_dir, "design_spec.md", design_spec_md)
-    _write(project_dir, "spec_lock.md",   spec_lock_md)
-
-    # ── PHASE B : EXECUTOR ────────────────────────────────────
-    sys_b = _EXECUTOR_SYSTEM.format(
-        executor_base=_skill("references/executor-base.md", 3000),
-        shared_standards=_skill("references/shared-standards.md", 2000),
-        slides_count_padded=n_pad,
-    )
-    usr_b = _EXECUTOR_USER.format(
-        slides_count=n,
-        slides_count_minus_1=n - 1,
-        slides_count_padded=n_pad,
-        design_spec_md=design_spec_md,
-        spec_lock_md=spec_lock_md,
-        content=req.content,
-        primary=req.palette.primary,
-        layout_label=layout_label,
-        extra=extra,
-    )
-
-    logger.info("[%s] Phase B — Executor", job_id)
-    try:
-        raw_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
-        svg_files = _parse_executor(raw_b)
-    except Exception as e:
-        logger.error("[%s] Executor error: %s", job_id, e)
-        raise HTTPException(502, f"Executor LLM error: {e}")
-
-    if not svg_files:
-        raise HTTPException(502, "Executor produced no SVG files")
-
-    for rel_path, content in svg_files.items():
-        _write(project_dir, rel_path, content)
-    logger.info("[%s] %d SVG files written", job_id, len(svg_files))
-
-    # ── PHASE C : SCRIPTS ─────────────────────────────────────
-    # Speaker notes stub
-    notes_total = project_dir / "notes" / "total.md"
-    if not notes_total.exists():
-        notes_total.write_text("", encoding="utf-8")
-
-    _run("total_md_split.py", project_dir)
-    _run("finalize_svg.py",   project_dir)
-    _run("svg_to_pptx.py",   project_dir)
-
-    # ── COLLECT FINAL SVG SLIDES ──────────────────────────────
-    svg_final_dir  = project_dir / "svg_final"
-    svg_output_dir = project_dir / "svg_output"
-    svg_source     = svg_final_dir if list(svg_final_dir.glob("*.svg")) else svg_output_dir
-    svg_slides     = [
-        {"filename": p.name, "content": p.read_text(encoding="utf-8")}
-        for p in sorted(svg_source.glob("*.svg"))
-    ]
-    logger.info("[%s] %d SVG slides collected from %s", job_id, len(svg_slides), svg_source.name)
-
-    # ── FIND PPTX ─────────────────────────────────────────────
-    exports = sorted(
-        (project_dir / "exports").glob("*.pptx"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not exports:
-        raise HTTPException(500, "svg_to_pptx.py produced no PPTX")
-
-    pptx = exports[0]
-    logger.info("[%s] DONE → %s", job_id, pptx.name)
-
-    pptx_bytes   = pptx.read_bytes()
-    pptx_b64     = base64.b64encode(pptx_bytes).decode("utf-8")
-    html_content = json.dumps(svg_slides, ensure_ascii=False) if svg_slides else None
-
-    title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
-    pptx_url    = ""
-    document_id = ""
-
-    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
-        try:
-            pptx_url    = await upload_to_supabase(pptx_bytes, req.tenant_id, title)
-            document_id = await _sb_upsert_document(
-                tenant_id=req.tenant_id,
-                titre=title,
-                format="paysage",
-                design="ppt-master",
-                pptx_url=pptx_url,
-                html_content=html_content,
-            )
-            logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
-        except Exception as e:
-            logger.warning("[%s] Supabase storage/DB error: %s", job_id, e)
-
-    return {
-        "status":      "done",
-        "pptx_base64": pptx_b64,
-        "pptx_url":    pptx_url,
-        "document_id": document_id,
-        "svg_slides":  svg_slides,
+async def start_generate(req: GenerateRequest):
+    """Start async pipeline — returns job_id immediately for polling."""
+    job_id = uuid.uuid4().hex[:8]
+    _jobs[job_id] = {
+        "status":   "running",
+        "step":     0,
+        "progress": 2,
+        "result":   None,
+        "error":    None,
     }
+    asyncio.create_task(_pipeline(job_id, req))
+    logger.info("[%s] Job created, background task started", job_id)
+    return {"job_id": job_id}
+
+
+@app.get("/generate-pptx/{job_id}")
+async def poll_generate(job_id: str):
+    """Poll job status. Returns step (0-3), progress (0-100), status, result."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, f"Job {job_id!r} not found")
+    return job
 
 # ─────────────────────────────────────────────
 # HEALTH
@@ -597,10 +651,10 @@ async def generate_pptx(req: GenerateRequest):
 @app.get("/")
 async def root():
     return {
-        "service": "traitement_pptmaster",
-        "status":  "ok",
-        "version": "1.0.0",
-        "endpoints": ["GET /layouts", "POST /generate-pptx"],
+        "service":   "traitement_pptmaster",
+        "status":    "ok",
+        "version":   "1.0.0",
+        "endpoints": ["GET /layouts", "POST /generate-pptx", "GET /generate-pptx/{job_id}"],
     }
 
 
