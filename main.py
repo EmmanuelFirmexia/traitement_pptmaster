@@ -523,13 +523,16 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         if layout_folder:
             example_spec_path = EXAMPLES_DIR / layout_folder / "design_spec.md"
             if example_spec_path.exists():
-                example_text = example_spec_path.read_text(encoding="utf-8")[:3500]
+                example_text = example_spec_path.read_text(encoding="utf-8")
+                logger.info("[%s] design_spec_reference length: %d chars", job_id, len(example_text))
                 _write(project_dir, "design_spec_reference.md", example_text)
                 design_example_section = (
                     "\nVISUAL STYLE REFERENCE — reproduce this exact design language, "
                     "adapted to the new content below:\n"
                     f"{example_text}\n"
                 )
+            else:
+                logger.warning("[%s] design_spec.md not found in %s", job_id, layout_folder)
                 logger.info("[%s] Layout reference: %s", job_id, layout_folder)
 
         # ── Phase A : Strategist ──────────────────────────────
