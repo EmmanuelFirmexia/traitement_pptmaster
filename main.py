@@ -74,7 +74,8 @@ class GenerateRequest(BaseModel):
     title:            str = ""
     layout:           str = "free"
     provider:         Literal["claude", "mistral"] = "claude"
-    content_mode:     str = "marketing"  # "marketing" | "strict"
+    content_mode:     str = "marketing"    # "marketing" | "strict"
+    document_type:    str = "presentation" # "presentation" | "report" | "diagnostic"
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -202,13 +203,56 @@ def _skill(rel: str, max_chars: int = 0) -> str:
 # PHASE A — STRATEGIST PROMPT
 # ─────────────────────────────────────────────
 
-_STRATEGIST_SYSTEM = """
+CONTENT_MODE_INSTRUCTIONS: dict[str, str] = {
+    "strict": """
+CONTENT FIDELITY (STRICT MODE):
+Reproduce source text verbatim on every slide.
+Do NOT rewrite, summarize, paraphrase, or editorialize.
+Use exact words, numbers, and structure from source.
+""".strip(),
+    "marketing": """
+CONTENT MODE (MARKETING):
+Rewrite for maximum commercial impact.
+Use persuasive language, strong verbs, concrete numbers.
+Structure for clarity and engagement. Vouvoiement.
+""".strip(),
+}
+
+DOCUMENT_TYPE_INSTRUCTIONS: dict[str, str] = {
+    "presentation": """
+DOCUMENT TYPE — COMMERCIAL PRESENTATION:
+- 6 slides maximum
+- Structure: hook → problem → solution → proof → benefits → CTA
+- Visual, minimal text per slide (max 40 words per slide)
+- One key message per slide
+- Final slide: clear call to action
+- Tone: B2B, professional, direct, vouvoiement
+""".strip(),
+    "report": """
+DOCUMENT TYPE — ANALYTICAL REPORT:
+- 10-15 slides
+- Structure: context → methodology → data → analysis → recommendations
+- Dense, data-forward, tables and charts encouraged
+- Precise language, factual tone
+- Final slide: prioritized action plan
+""".strip(),
+    "diagnostic": """
+DOCUMENT TYPE — DIAGNOSTIC / AUDIT:
+- 8-12 slides
+- Structure: scope → current state → gaps → root causes → recommendations → roadmap
+- Quantified findings, risk levels
+- Structured layout, numbered recommendations
+- Final slide: quick wins vs long-term actions
+""".strip(),
+}
+
+_STRATEGIST_SYSTEM_BASE = """
 You are PPT Master acting as the STRATEGIST role.
 You run in HEADLESS API MODE — skip all BLOCKING stops, browser UIs, and interactive confirmations.
 Auto-approve all Eight Confirmations using the parameters provided.
 
 Your task: produce ONLY design_spec.md and spec_lock.md for the requested presentation.
-{design_example_section}
+
 REFERENCE — spec_lock.md skeleton (follow this EXACTLY):
 {spec_lock_ref}
 
@@ -239,8 +283,6 @@ CONFIRMED PARAMETERS:
     secondary: {secondary}
     accent:    {accent}
 {extra}
-
-{content_fidelity}
 
 Rules:
 - Lock colors: use primary={primary} as `primary`, secondary={secondary} as `secondary_accent`, accent={accent} as `accent`.
@@ -573,25 +615,23 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         # ── Phase A : Strategist ──────────────────────────────
         _set_job(job_id, step=0, progress=5)
 
-        sys_a = _STRATEGIST_SYSTEM.format(
+        content_instructions = CONTENT_MODE_INSTRUCTIONS.get(
+            req.content_mode, CONTENT_MODE_INSTRUCTIONS["marketing"]
+        )
+        type_instructions = DOCUMENT_TYPE_INSTRUCTIONS.get(
+            req.document_type, DOCUMENT_TYPE_INSTRUCTIONS["presentation"]
+        )
+
+        sys_base = _STRATEGIST_SYSTEM_BASE.format(
             spec_lock_ref=_skill("templates/spec_lock_reference.md",   4000),
             shared_standards=_skill("references/shared-standards.md", 3000),
-            design_example_section=design_example_section,
         )
-        if req.content_mode == "strict":
-            content_fidelity = (
-                "CONTENT FIDELITY RULE (STRICT MODE):\n"
-                "Reproduce the source text verbatim on every slide.\n"
-                "Do NOT rewrite, summarize, paraphrase, or editorialize.\n"
-                "Use the exact words, numbers, and structure from the source."
-            )
-        else:
-            content_fidelity = (
-                "CONTENT MODE (MARKETING):\n"
-                "Rewrite the content for maximum commercial impact.\n"
-                "Use persuasive language, strong verbs, concrete numbers.\n"
-                "Structure for clarity and engagement."
-            )
+        sys_a = "\n\n".join(filter(None, [
+            sys_base,
+            type_instructions,
+            content_instructions,
+            design_example_section or "",
+        ]))
 
         usr_a = _STRATEGIST_USER.format(
             content=req.content,
@@ -601,10 +641,12 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
             secondary=req.palette.secondary,
             accent=req.palette.accent,
             extra=extra,
-            content_fidelity=content_fidelity,
         )
 
-        logger.info("[%s] Phase A — Strategist content_mode=%s", job_id, req.content_mode)
+        logger.info(
+            "[%s] Phase A — Strategist content_mode=%s document_type=%s",
+            job_id, req.content_mode, req.document_type,
+        )
         raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
         logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
         await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
