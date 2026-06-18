@@ -451,10 +451,21 @@ def _extract_json_safe(raw: str) -> str:
     raise ValueError("No valid JSON object found in response")
 
 
+def _strip_fences(text: str) -> str:
+    """Remove markdown code fences the LLM may wrap around block content."""
+    text = re.sub(r"^```[a-zA-Z]*\r?\n?", "", text.lstrip())
+    text = re.sub(r"\r?\n?```\s*$",        "", text.rstrip())
+    return text.strip()
+
+
 def _parse_strategist(raw: str) -> tuple[str, str]:
     """Parse Strategist response using DESIGN_SPEC / SPEC_LOCK text markers.
 
-    Tolerant: missing END markers fall back to the next START or end-of-string.
+    Guards:
+    - Validates marker ordering (DESIGN_SPEC before SPEC_LOCK).
+    - ds_end fallback = sl_start only when > ds_start, preventing cross-block leaks.
+    - sl_end fallback = len(raw) when SPEC_LOCK_END absent.
+    - Strips markdown fences from extracted content.
     """
     ds_start = raw.find("DESIGN_SPEC_START")
     sl_start = raw.find("SPEC_LOCK_START")
@@ -464,16 +475,22 @@ def _parse_strategist(raw: str) -> tuple[str, str]:
             f"Strategist markers not found. Raw (first 400 chars): {raw[:400]}"
         )
 
+    if sl_start <= ds_start:
+        raise ValueError(
+            f"Marker order invalid: SPEC_LOCK_START (pos {sl_start}) "
+            f"must appear after DESIGN_SPEC_START (pos {ds_start})"
+        )
+
     ds_end = raw.find("DESIGN_SPEC_END")
-    if ds_end == -1:
-        ds_end = sl_start  # fallback: everything before SPEC_LOCK_START
+    if ds_end == -1 or ds_end <= ds_start:
+        ds_end = sl_start  # fallback: clip at SPEC_LOCK_START boundary
 
     sl_end = raw.find("SPEC_LOCK_END")
-    if sl_end == -1:
+    if sl_end == -1 or sl_end <= sl_start:
         sl_end = len(raw)  # fallback: to end of string
 
-    design_spec = raw[ds_start + len("DESIGN_SPEC_START"):ds_end].strip()
-    spec_lock   = raw[sl_start + len("SPEC_LOCK_START"):sl_end].strip()
+    design_spec = _strip_fences(raw[ds_start + len("DESIGN_SPEC_START"):ds_end])
+    spec_lock   = _strip_fences(raw[sl_start + len("SPEC_LOCK_START"):sl_end])
 
     if not design_spec or not spec_lock:
         raise ValueError(
