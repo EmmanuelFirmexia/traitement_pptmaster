@@ -74,6 +74,7 @@ class GenerateRequest(BaseModel):
     title:            str = ""
     layout:           str = "free"
     provider:         Literal["claude", "mistral"] = "claude"
+    content_mode:     str = "marketing"  # "marketing" | "strict"
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -238,6 +239,8 @@ CONFIRMED PARAMETERS:
     secondary: {secondary}
     accent:    {accent}
 {extra}
+
+{content_fidelity}
 
 Rules:
 - Lock colors: use primary={primary} as `primary`, secondary={secondary} as `secondary_accent`, accent={accent} as `accent`.
@@ -575,6 +578,21 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
             shared_standards=_skill("references/shared-standards.md", 3000),
             design_example_section=design_example_section,
         )
+        if req.content_mode == "strict":
+            content_fidelity = (
+                "CONTENT FIDELITY RULE (STRICT MODE):\n"
+                "Reproduce the source text verbatim on every slide.\n"
+                "Do NOT rewrite, summarize, paraphrase, or editorialize.\n"
+                "Use the exact words, numbers, and structure from the source."
+            )
+        else:
+            content_fidelity = (
+                "CONTENT MODE (MARKETING):\n"
+                "Rewrite the content for maximum commercial impact.\n"
+                "Use persuasive language, strong verbs, concrete numbers.\n"
+                "Structure for clarity and engagement."
+            )
+
         usr_a = _STRATEGIST_USER.format(
             content=req.content,
             slides_count=n,
@@ -583,9 +601,10 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
             secondary=req.palette.secondary,
             accent=req.palette.accent,
             extra=extra,
+            content_fidelity=content_fidelity,
         )
 
-        logger.info("[%s] Phase A — Strategist", job_id)
+        logger.info("[%s] Phase A — Strategist content_mode=%s", job_id, req.content_mode)
         raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
         logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
         await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
