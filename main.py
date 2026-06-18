@@ -474,7 +474,7 @@ async def _sb_upsert_document(
         "design":      "ppt-master",
         "provider":    "claude",
         "pptx_url":    pptx_url,
-        "html_output": json.dumps(svg_slides) if svg_slides else None,
+        "html_output": json.dumps(svg_slides),
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
