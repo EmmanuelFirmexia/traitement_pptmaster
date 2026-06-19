@@ -724,6 +724,7 @@ async def _sb_upsert_document(
     palette_key: str = "theme",
     include_cta: bool = False,
     target_slide_count: Optional[int] = None,
+    gen_mode: str = "marketing",
     document_id: Optional[str] = None,
 ) -> str:
     payload = {
@@ -739,6 +740,7 @@ async def _sb_upsert_document(
         "palette_key":        palette_key,
         "include_cta":        include_cta,
         "target_slide_count": target_slide_count,
+        "gen_mode":           gen_mode,
     }
     async with httpx.AsyncClient(timeout=30) as client:
         if document_id:
@@ -996,6 +998,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
                     palette_key=req.palette_key,
                     include_cta=req.include_cta,
                     target_slide_count=req.target_slide_count,
+                    gen_mode=req.content_mode,
                     document_id=req.document_id,
                 )
                 logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
