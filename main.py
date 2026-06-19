@@ -21,7 +21,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import anthropic
 import httpx
@@ -66,17 +66,19 @@ class Palette(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    content:          str
-    prompt_injection: str = ""
-    style:            str = "professional"
-    palette:          Palette
-    slides_count:     int = 6
-    tenant_id:        str
-    title:            str = ""
-    layout:           str = "free"
-    provider:         Literal["claude", "mistral"] = "claude"
-    content_mode:     str = "marketing"    # "marketing" | "strict"
-    document_type:    str = "presentation" # "presentation" | "report" | "diagnostic"
+    content:            str
+    prompt_injection:   str = ""
+    style:              str = "professional"
+    palette:            Palette
+    tenant_id:          str
+    title:              str = ""
+    layout:             str = "free"
+    provider:           Literal["claude", "mistral"] = "claude"
+    content_mode:       str = "marketing"       # "marketing" | "strict"
+    document_type:      str = "presentation"    # "presentation" | "report" | "diagnostic"
+    # ── NOUVEAU : options utilisateur ──────────────────────────────────────
+    include_cta:        bool = False            # Ajouter une slide CTA finale
+    target_slide_count: Optional[int] = None   # None = adaptatif, int = contrainte exacte
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -171,7 +173,7 @@ def _set_job(job_id: str, **kwargs: object) -> None:
 app = FastAPI(
     title="PPT Master API",
     description="Génération PPTX via le pipeline SVG PPT Master",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -201,63 +203,145 @@ def _skill(rel: str, max_chars: int = 0) -> str:
     return txt[:max_chars] if max_chars else txt
 
 # ─────────────────────────────────────────────
-# PHASE A — STRATEGIST PROMPT
+# PHASE A — STRATEGIST PROMPTS
 # ─────────────────────────────────────────────
+
+# ── Mode instructions ─────────────────────────────────────────────────────────
 
 CONTENT_MODE_INSTRUCTIONS: dict[str, str] = {
     "strict": """
-STRICT MODE — ABSOLUTE RULE:
-Every word, number, bullet point, and punctuation mark from the source
-content MUST appear in the slides exactly as written.
-NO rewriting. NO summarizing. NO paraphrasing. NO editorializing.
-NO invented titles. NO added context. NO "improved" phrasing.
+## MODE DE GÉNÉRATION : STRICT — INVIOLABLE
 
-If the source says "Génération IA de présentations 16:9 prêtes à envoyer aux prospects"
-the slide MUST say exactly "Génération IA de présentations 16:9 prêtes à envoyer aux prospects"
-— not "Génération automatique", not "Présentations IA", not any variation.
+Tu es un transcripteur fidèle, pas un marketeur.
+Les règles suivantes sont absolues et priment sur toute autre instruction.
 
-Your ONLY creative freedom in STRICT MODE is:
-- Which slide each piece of content goes on
-- The visual layout of that content on the slide
-- Nothing else.
+### CE QUI EST INTERDIT (violation = échec critique) :
+- Inventer du texte, des slogans, des titres, des transitions non présents dans la source
+- Ajouter des chiffres, statistiques, pourcentages non présents dans la source
+- Ajouter des URLs, numéros de téléphone, adresses email non présents dans la source
+- Ajouter des témoignages, noms de clients, logos, certifications non présents dans la source
+- Formuler des promesses ou garanties non présentes dans la source
+- Appliquer une structure narrative forcée (hook/problem/solution/CTA) si le contenu ne la supporte pas
+- Créer des slides pour remplir un quota — chaque slide doit avoir du contenu source réel
 
-Violation of this rule = generation failure.
+### CE QUI EST AUTORISÉ :
+- Découper le contenu source en slides logiques (1 idée principale par slide)
+- Créer une slide de couverture si un titre est identifiable dans la source
+- Réorganiser l'ordre des idées pour la lisibilité (sans altérer le sens)
+- Fusionner deux idées courtes sur une même slide si < 25 mots chacune et même thème
+
+### RÈGLE DU NOMBRE DE SLIDES :
+- Nombre de slides = nombre d'idées distinctes dans la source
+- Si TARGET_SLIDE_COUNT est fourni : respecter exactement, fusionner ou découper en conséquence
+- Si TARGET_SLIDE_COUNT est null : adaptatif, aucun plafond artificiel
+- 1 slide par bloc de contenu substantiel (80-120 mots indicatif)
+- Ne jamais créer une slide vide ou avec du contenu inventé pour atteindre un nombre
+
+### RÈGLE DU CTA :
+- Slide CTA générée UNIQUEMENT si : include_cta=true ET un CTA explicite existe dans la source
+- Si include_cta=true mais aucun CTA dans la source : ne pas créer de slide CTA, le signaler dans spec_lock.md
+- Si include_cta=false : pas de slide CTA, quelle que soit la source
+- Interdit : inventer une URL, un numéro, un email même si include_cta=true
 """.strip(),
+
     "marketing": """
-CONTENT MODE (MARKETING):
-Rewrite for maximum commercial impact.
-Use persuasive language, strong verbs, concrete numbers.
-Structure for clarity and engagement. Vouvoiement.
+## MODE DE GÉNÉRATION : MARKETING — CRÉATIF MAÎTRISÉ
+
+Tu es un consultant marketing B2B qui restructure le contenu pour maximiser l'impact commercial.
+Tu t'appuies sur les 8 dimensions de l'ADN marketing pour structurer la présentation.
+
+### LES 8 DIMENSIONS ADN MARKETING :
+1. Problème / Douleur — Quel problème concret ? Coût de l'inaction ?
+2. Cible & Périmètre — Pour qui exactement ? Qui est exclu ?
+3. Différenciateur unique — Pourquoi nous plutôt qu'un autre ?
+4. Modalités d'engagement & Format — Comment ça marche concrètement ?
+5. Facilité d'adoption — Pourquoi c'est simple de démarrer ?
+6. Résultats attendus — Ce qu'on obtient, chiffré si possible
+7. Bénéfice client — La transformation vécue (avant / après)
+8. Preuve sociale & Réassurance — Qui nous fait confiance ? Quelles garanties ?
+
+### STRUCTURE NARRATIVE RECOMMANDÉE :
+Hook → Problem → Solution → Proof → Adoption → [CTA]
+Correspondance :
+- Hook      → Bénéfice client + Cible
+- Problem   → Problème / Douleur + Coût de l'inaction
+- Solution  → Différenciateur + Modalités d'engagement
+- Proof     → Preuve sociale + Réassurance (AVANT les bénéfices — les PME françaises ont besoin d'être rassurées avant d'écouter les promesses)
+- Adoption  → Facilité d'adoption + Résultats attendus
+- CTA       → Option utilisateur uniquement (voir règle CTA)
+
+### CE QUI EST AUTORISÉ :
+- Réécrire pour plus d'impact commercial (ton B2B, direct, vouvoiement)
+- Réorganiser le contenu selon la structure narrative
+- Déduire le problème depuis le bénéfice (ex: si "gain de temps" → problème implicite "perte de temps")
+- Reformuler qualitativement (ex: "un accompagnement simple" si la source dit "déploiement rapide")
+- Fusionner des dimensions faibles avec des dimensions adjacentes
+- CTA générique sans coordonnées si include_cta=true et aucun contact dans la source
+
+### CE QUI EST INTERDIT — MÊME EN MODE MARKETING :
+- Inventer des chiffres, statistiques, pourcentages (ex: "réduction de 37%" sans source)
+- Inventer des URLs, numéros de téléphone, adresses email
+- Inventer des témoignages, noms de clients, certifications
+- Inventer des résultats chiffrés non présents dans la source
+- Inventer des données sectorielles génériques (ex: "les PME perdent 15h/semaine")
+
+### RÈGLE DU NOMBRE DE SLIDES :
+- Si TARGET_SLIDE_COUNT est fourni par l'utilisateur : respecter exactement, sans plafond
+- Si TARGET_SLIDE_COUNT est null : nombre adaptatif selon richesse du contenu :
+    0-1 dimension riche  → 3 slides
+    2-3 dimensions riches → 4-5 slides
+    4-5 dimensions riches → 6 slides
+    6+ dimensions riches  → 7-8 slides (conseil indicatif, pas de plafond dur)
+  Note : au-delà de 8 slides, envisager de découper en plusieurs documents
+- Une dimension est "riche" si ≥ 2 phrases substantielles ou données chiffrées dans la source
+
+### RÈGLE DU CTA :
+- Si include_cta=true ET source contient un CTA/contact → utiliser le texte exact de la source
+- Si include_cta=true ET aucun contact dans la source → CTA générique : "Contactez-nous pour en savoir plus" (SANS URL ni numéro inventés)
+- Si include_cta=false → pas de slide CTA
+
+### GESTION DES DIMENSIONS ABSENTES :
+Ordre de priorité si TARGET_SLIDE_COUNT force une réduction :
+Solution > Bénéfice client > Différenciateur > Résultats > Facilité > Preuve > CTA
+- Dimension absente → omettre la slide, ne jamais inventer
+- Dimension pauvre → fusionner avec la dimension adjacente
+- Jamais de slide vide
 """.strip(),
 }
+
+# ── Document type instructions ────────────────────────────────────────────────
 
 DOCUMENT_TYPE_INSTRUCTIONS: dict[str, str] = {
     "presentation": """
-DOCUMENT TYPE — COMMERCIAL PRESENTATION:
-- 6 slides maximum
-- Structure: hook → problem → solution → proof → benefits → CTA
-- Visual, minimal text per slide (max 40 words per slide)
-- One key message per slide
-- Final slide: clear call to action
-- Tone: B2B, professional, direct, vouvoiement
+## TYPE DE DOCUMENT : PRÉSENTATION COMMERCIALE
+- Structure narrative : Hook → Problem → Solution → Proof → Adoption → [CTA]
+- Nombre de slides : adaptatif au contenu (voir règles du mode)
+- Densité : visuel, minimal text par slide (max 40 mots par slide)
+- Une idée clé par slide
+- Ton : B2B, professionnel, direct, vouvoiement
+- La slide CTA est une OPTION utilisateur — ne jamais l'imposer
 """.strip(),
+
     "report": """
-DOCUMENT TYPE — ANALYTICAL REPORT:
-- 10-15 slides
-- Structure: context → methodology → data → analysis → recommendations
-- Dense, data-forward, tables and charts encouraged
-- Precise language, factual tone
-- Final slide: prioritized action plan
+## TYPE DE DOCUMENT : RAPPORT ANALYTIQUE
+- Structure : contexte → méthodologie → données → analyse → recommandations
+- Nombre de slides : adaptatif, typiquement 8-15
+- Densité : plus dense, tableaux et données encouragés
+- Ton : factuel, précis
+- Dernière slide : plan d'action priorisé (sauf si mode strict sans CTA source)
 """.strip(),
+
     "diagnostic": """
-DOCUMENT TYPE — DIAGNOSTIC / AUDIT:
-- 8-12 slides
-- Structure: scope → current state → gaps → root causes → recommendations → roadmap
-- Quantified findings, risk levels
-- Structured layout, numbered recommendations
-- Final slide: quick wins vs long-term actions
+## TYPE DE DOCUMENT : DIAGNOSTIC / AUDIT
+- Structure : périmètre → état actuel → écarts → causes → recommandations → feuille de route
+- Nombre de slides : adaptatif, typiquement 6-12
+- Densité : findings quantifiés, niveaux de risque
+- Ton : structuré, recommandations numérotées
+- Dernière slide : quick wins vs actions long terme (sauf si mode strict sans CTA source)
 """.strip(),
 }
+
+# ── Strategist system + user prompts ─────────────────────────────────────────
 
 _STRATEGIST_SYSTEM_BASE = """
 You are PPT Master acting as the STRATEGIST role.
@@ -272,12 +356,40 @@ REFERENCE — spec_lock.md skeleton (follow this EXACTLY):
 REFERENCE — shared technical standards (SVG/PPTX rules):
 {shared_standards}
 
+## SPEC_LOCK.MD FORMAT — MANDATORY STRUCTURE
+The spec_lock.md MUST begin with a CONFIGURATION section that the Executor reads
+as its sole source of truth for slide count and CTA policy:
+
+```
+## CONFIGURATION
+generation_mode: [STRICT|MARKETING]
+slide_count: [exact integer — number of slides you will generate]
+include_cta: [true|false]
+cta_source: [explicit_source|generic_placeholder|none]
+target_slide_count_requested: [integer|null]
+```
+
+Then one section per slide:
+```
+## SLIDE 01: [TYPE]
+- Layout Type: [COVER|HOOK|PROBLEM|SOLUTION|PROOF|ADOPTION|BENEFITS|CTA|CONTENT|CLOSING]
+- Title: [exact text]
+- Content:
+  * [bullet 1 — max 15 words]
+  * [bullet 2 — max 15 words]
+- Visual Hint: [brief SVG layout suggestion — e.g. "3 columns metrics", "left text right icon"]
+- ADN Dimension: [dimension name or "none"]
+```
+
+IMPORTANT: The Executor reads slide_count from ## CONFIGURATION and generates
+EXACTLY that number of slides. It does NOT add or remove slides on its own.
+
 OUTPUT FORMAT — respond with EXACTLY this structure, no markdown around the blocks:
 DESIGN_SPEC_START
 [full content of design_spec.md as plain text]
 DESIGN_SPEC_END
 SPEC_LOCK_START
-[full content of spec_lock.md as plain text]
+[full content of spec_lock.md as plain text — starting with ## CONFIGURATION]
 SPEC_LOCK_END
 """.strip()
 
@@ -289,28 +401,26 @@ CONTENT:
 
 CONFIRMED PARAMETERS:
 - Canvas: PPT 16:9  →  viewBox 0 0 1280 720
-- Slides: {slides_count}
 - Style: {style}
 - Palette:
     primary:   {primary}
     secondary: {secondary}
     accent:    {accent}
+- CTA slide option: {include_cta}
+- Target slide count: {target_slide_count}
 {extra}
 
 Rules:
 - Lock colors: use primary={primary} as `primary`, secondary={secondary} as `secondary_accent`, accent={accent} as `accent`.
   Set `bg: #FFFFFF` unless the style clearly calls for a dark background.
-- Auto-select mode (pyramid/narrative/instructional/showcase/briefing) from content type.
-- Auto-select visual_style matching the style parameter.
-- page_layouts: assign one layout per page (free design — no template SVGs needed).
-- No images section needed (placeholder rectangles will be used).
 - font_family: "Calibri", Arial, sans-serif
 - body: 22, title: 40, subtitle: 28, annotation: 14
 - Use the DESIGN_SPEC_START / DESIGN_SPEC_END and SPEC_LOCK_START / SPEC_LOCK_END markers exactly.
+- The spec_lock.md MUST start with ## CONFIGURATION containing slide_count as an exact integer.
 """.strip()
 
 # ─────────────────────────────────────────────
-# PHASE B — EXECUTOR PROMPT
+# PHASE B — EXECUTOR PROMPTS
 # ─────────────────────────────────────────────
 
 _EXECUTOR_SYSTEM = """
@@ -323,32 +433,50 @@ REFERENCE — executor guidelines:
 REFERENCE — shared technical standards:
 {shared_standards}
 
-CRITICAL SVG RULES:
-1. viewBox MUST be "0 0 1280 720" for every slide.
-2. All colors MUST come from spec_lock.md — no invented values.
-3. No external URLs (no href="http://...") — use inline shapes / gradients instead of images.
-4. Fonts: "Calibri", Arial, sans-serif — PPT-safe stacks only.
-5. Each SVG must be a complete, self-contained <svg> element.
-6. Slide files: 01_cover.svg, 02_*.svg, …, {slides_count_padded}_closing.svg
+## YOUR SOLE SOURCE OF TRUTH: spec_lock.md
+Read the ## CONFIGURATION section of spec_lock.md FIRST.
+- slide_count: generate EXACTLY this number of SVG files — no more, no less
+- include_cta: if false, DO NOT generate a CTA slide even if you think one is needed
+- If spec_lock.md contains no CTA slide section, DO NOT generate one
+
+## ABSOLUTE RULES — EXECUTOR HAS NO NARRATIVE AUTONOMY:
+1. You are an execution engine, not a content creator
+2. NEVER add slides not listed in spec_lock.md
+3. NEVER remove slides listed in spec_lock.md
+4. NEVER invent text, titles, slogans, URLs, phone numbers, emails, metrics
+5. NEVER add a closing/CTA slide that is not explicitly defined in spec_lock.md
+6. If a spec_lock.md slide section has empty content fields → generate a minimal visual slide with no text rather than inventing content
+7. Any deviation from spec_lock.md is a critical execution error
+
+## CRITICAL SVG RULES:
+1. viewBox MUST be "0 0 1280 720" for every slide
+2. All colors MUST come from spec_lock.md — no invented values
+3. No external URLs (no href="http://...") — inline shapes / gradients only
+4. Fonts: "Calibri", Arial, sans-serif — PPT-safe stacks only
+5. Each SVG must be a complete, self-contained <svg> element
+6. Slide files named: 01_cover.svg, 02_*.svg, …, NN_closing.svg (only if CTA is in spec)
 
 OUTPUT FORMAT — return exactly this JSON array and nothing else:
 [
   {{"path": "svg_output/01_cover.svg",   "content": "<svg viewBox=\\"0 0 1280 720\\" ...>...</svg>"}},
-  {{"path": "svg_output/02_agenda.svg",  "content": "<svg ...>...</svg>"}},
+  {{"path": "svg_output/02_problem.svg", "content": "<svg ...>...</svg>"}},
   ...
 ]
 """.strip()
 
 _EXECUTOR_USER = """
-Generate exactly {slides_count} SVG slides based on these specs:
+Generate SVG slides based on these specs.
+
+READ FIRST — CONFIGURATION from spec_lock.md:
+{spec_lock_config_section}
 
 DESIGN SPEC:
 {design_spec_md}
 
-SPEC LOCK:
+FULL SPEC LOCK:
 {spec_lock_md}
 
-SOURCE CONTENT:
+SOURCE CONTENT (reference only — do not add content not in spec_lock.md):
 {content}
 
 VISUAL STYLE: {layout_label}
@@ -357,12 +485,12 @@ Apply this aesthetic consistently — colors, shapes, gradients, and layout patt
 {extra}
 
 Instructions:
-- Slide 01: cover (title + subtitle + decorative element using primary color {primary})
-- Slides 02 to {slides_count_minus_1}: content slides (1 key idea per slide, strong visual hierarchy)
-- Slide {slides_count_padded}: closing (thank you / call to action)
-- Use SVG <rect>, <text>, <line>, <path>, <g> — no <image> tags (no external assets)
+- Generate EXACTLY {slide_count} slides as specified in ## CONFIGURATION above
+- Follow the slide plan in spec_lock.md exactly — slide types, titles, content, order
+- Use SVG <rect>, <text>, <line>, <path>, <g> — no <image> tags
 - Apply colors strictly from spec_lock.md
-- Output ONLY the JSON array — no prose, no markdown.
+- For text layout: use <tspan> with explicit dy attributes for multi-line text (prevents overflow)
+- Output ONLY the JSON array — no prose, no markdown
 """.strip()
 
 # ─────────────────────────────────────────────
@@ -448,7 +576,6 @@ async def _log_ai_usage(tenant_id: str, action: str, model: str,
 # ─────────────────────────────────────────────
 
 def _extract_json_safe(raw: str) -> str:
-    """Strip markdown fences and extract the outermost JSON object or array."""
     cleaned = re.sub(r"^```json\s*", "", raw.strip(), flags=re.MULTILINE)
     cleaned = re.sub(r"\s*```\s*$", "", cleaned, flags=re.MULTILINE)
     for start_char, end_char in [('{', '}'), ('[', ']')]:
@@ -465,21 +592,12 @@ def _extract_json_safe(raw: str) -> str:
 
 
 def _strip_fences(text: str) -> str:
-    """Remove markdown code fences the LLM may wrap around block content."""
     text = re.sub(r"^```[a-zA-Z]*\r?\n?", "", text.lstrip())
     text = re.sub(r"\r?\n?```\s*$",        "", text.rstrip())
     return text.strip()
 
 
 def _parse_strategist(raw: str) -> tuple[str, str]:
-    """Parse Strategist response using DESIGN_SPEC / SPEC_LOCK text markers.
-
-    Guards:
-    - Validates marker ordering (DESIGN_SPEC before SPEC_LOCK).
-    - ds_end fallback = sl_start only when > ds_start, preventing cross-block leaks.
-    - sl_end fallback = len(raw) when SPEC_LOCK_END absent.
-    - Strips markdown fences from extracted content.
-    """
     ds_start = raw.find("DESIGN_SPEC_START")
     sl_start = raw.find("SPEC_LOCK_START")
 
@@ -496,11 +614,11 @@ def _parse_strategist(raw: str) -> tuple[str, str]:
 
     ds_end = raw.find("DESIGN_SPEC_END")
     if ds_end == -1 or ds_end <= ds_start:
-        ds_end = sl_start  # fallback: clip at SPEC_LOCK_START boundary
+        ds_end = sl_start
 
     sl_end = raw.find("SPEC_LOCK_END")
     if sl_end == -1 or sl_end <= sl_start:
-        sl_end = len(raw)  # fallback: to end of string
+        sl_end = len(raw)
 
     design_spec = _strip_fences(raw[ds_start + len("DESIGN_SPEC_START"):ds_end])
     spec_lock   = _strip_fences(raw[sl_start + len("SPEC_LOCK_START"):sl_end])
@@ -513,8 +631,35 @@ def _parse_strategist(raw: str) -> tuple[str, str]:
     return design_spec, spec_lock
 
 
+def _extract_spec_lock_config(spec_lock_md: str) -> tuple[int, bool]:
+    """
+    Extract slide_count and include_cta from the ## CONFIGURATION section
+    of spec_lock.md. Falls back to counting ## SLIDE sections if not found.
+    Returns (slide_count, include_cta).
+    """
+    slide_count = None
+    include_cta = False
+
+    # Try parsing ## CONFIGURATION section
+    config_match = re.search(r"##\s*CONFIGURATION(.*?)(?=##|\Z)", spec_lock_md, re.DOTALL | re.IGNORECASE)
+    if config_match:
+        config_text = config_match.group(1)
+        sc_match = re.search(r"slide_count\s*:\s*(\d+)", config_text)
+        if sc_match:
+            slide_count = int(sc_match.group(1))
+        cta_match = re.search(r"include_cta\s*:\s*(true|false)", config_text, re.IGNORECASE)
+        if cta_match:
+            include_cta = cta_match.group(1).lower() == "true"
+
+    # Fallback: count ## SLIDE sections
+    if slide_count is None:
+        slide_sections = re.findall(r"##\s*SLIDE\s+\d+", spec_lock_md, re.IGNORECASE)
+        slide_count = len(slide_sections) if slide_sections else 6
+
+    return slide_count, include_cta
+
+
 def _parse_executor(raw: str) -> dict[str, str]:
-    """Parse Executor JSON array of {path, content} objects."""
     data = json.loads(_extract_json_safe(raw))
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array of {path, content} objects")
@@ -602,10 +747,6 @@ async def _sb_upsert_document(
 # ─────────────────────────────────────────────
 
 async def _pipeline(job_id: str, req: GenerateRequest) -> None:
-    """
-    Full async pipeline — runs as a background task.
-    Progress updates are written to _jobs[job_id] for polling.
-    """
     try:
         proj_name   = f"ppt_{req.tenant_id[:8]}_{job_id}"
         project_dir = PROJECTS_DIR / proj_name
@@ -613,11 +754,12 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         for sub in ["svg_output", "notes", "exports", "images", "svg_final"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
 
-        logger.info("[%s] START provider=%s slides=%d layout=%s",
-                    job_id, req.provider, req.slides_count, req.layout)
+        logger.info(
+            "[%s] START provider=%s layout=%s mode=%s include_cta=%s target_slides=%s",
+            job_id, req.provider, req.layout, req.content_mode,
+            req.include_cta, req.target_slide_count,
+        )
 
-        n     = req.slides_count
-        n_pad = str(n).zfill(2)
         extra = f"\nADDITIONAL INSTRUCTIONS:\n{req.prompt_injection}" if req.prompt_injection else ""
 
         # ── Layout reference ──────────────────────────────────
@@ -627,7 +769,8 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         layout_label  = f"{layout_info['label']} — {layout_info['sublabel']}"
 
         design_example_section = ""
-        spec_lock_path: Path | None = None  # tracks example spec_lock for Phase B override
+        spec_lock_path: Path | None = None
+
         if layout_folder:
             example_dir       = EXAMPLES_DIR / layout_folder
             example_spec_path = example_dir / "design_spec.md"
@@ -641,15 +784,12 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
                 spec_lock_reference = ""
                 if spec_lock_path.exists():
                     spec_lock_reference = spec_lock_path.read_text(encoding="utf-8")
-                    logger.info("[%s] spec_lock_reference length: %d chars",
-                                job_id, len(spec_lock_reference))
+                    logger.info("[%s] spec_lock_reference length: %d chars", job_id, len(spec_lock_reference))
 
                 design_example_section = f"""
 VISUAL STYLE REFERENCE — MANDATORY BINDING CONTRACT:
-
-The following spec_lock.md defines the EXACT visual language
-you MUST use. Copy colors, fonts, layout patterns verbatim.
-Do NOT invent new colors or styles.
+The following defines the EXACT visual language you MUST use.
+Copy colors, fonts, layout patterns verbatim. Do NOT invent new colors or styles.
 
 DESIGN SPEC (narrative reference):
 {example_text}
@@ -661,13 +801,12 @@ Your output spec_lock.md MUST replicate these exact values:
 - Same color palette (hex codes verbatim)
 - Same typography (font families verbatim)
 - Same layout patterns
-- Same visual effects (glassmorphism, grid, etc.)
+- Same visual effects
 Only the CONTENT (texts, data) changes. The STYLE is locked.
 """
             else:
                 logger.warning("[%s] design_spec.md not found in %s", job_id, layout_folder)
-                logger.info("[%s] Layout reference: %s", job_id, layout_folder)
-                spec_lock_path = None  # no reference found — skip Phase B override
+                spec_lock_path = None
 
         # ── Phase A : Strategist ──────────────────────────────
         _set_job(job_id, step=0, progress=5)
@@ -680,7 +819,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         )
 
         sys_base = _STRATEGIST_SYSTEM_BASE.format(
-            spec_lock_ref=_skill("templates/spec_lock_reference.md",   4000),
+            spec_lock_ref=_skill("templates/spec_lock_reference.md", 4000),
             shared_standards=_skill("references/shared-standards.md", 3000),
         )
         sys_a = "\n\n".join(filter(None, [
@@ -690,46 +829,69 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             design_example_section or "",
         ]))
 
+        # target_slide_count label for prompt
+        if req.target_slide_count:
+            target_label = f"{req.target_slide_count} slides (exact — user constraint)"
+        else:
+            target_label = "null (adaptive — determine from content richness)"
+
         usr_a = _STRATEGIST_USER.format(
             content=req.content,
-            slides_count=n,
             style=req.style,
             primary=req.palette.primary,
             secondary=req.palette.secondary,
             accent=req.palette.accent,
+            include_cta=str(req.include_cta).lower(),
+            target_slide_count=target_label,
             extra=extra,
         )
 
         logger.info(
-            "[%s] Phase A — Strategist content_mode=%s document_type=%s",
-            job_id, req.content_mode, req.document_type,
+            "[%s] Phase A — Strategist content_mode=%s document_type=%s include_cta=%s target_slides=%s",
+            job_id, req.content_mode, req.document_type, req.include_cta, req.target_slide_count,
         )
         raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
         logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
         await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
+
         design_spec_md, spec_lock_md = _parse_strategist(raw_a)
         _write(project_dir, "design_spec.md", design_spec_md)
         _write(project_dir, "spec_lock.md",   spec_lock_md)
+
+        # Extract slide_count and include_cta from spec_lock
+        spec_slide_count, spec_include_cta = _extract_spec_lock_config(spec_lock_md)
+        logger.info(
+            "[%s] spec_lock parsed: slide_count=%d include_cta=%s",
+            job_id, spec_slide_count, spec_include_cta,
+        )
         _set_job(job_id, step=1, progress=30)
 
         # ── Phase B : Executor ────────────────────────────────
-        # Override spec_lock.md with example's locked version so Executor
-        # uses exact colors/fonts from the reference, not the Strategist's guess.
+        # Override spec_lock.md with example's locked version for visual style
         if spec_lock_path is not None and spec_lock_path.exists():
+            # Merge: keep CONFIGURATION from generated spec_lock, override style from example
+            example_spec_lock = spec_lock_path.read_text(encoding="utf-8")
             shutil.copy(spec_lock_path, project_dir / "spec_lock.md")
-            spec_lock_md = spec_lock_path.read_text(encoding="utf-8")
-            logger.info("[%s] spec_lock overridden with example (%d chars)",
-                        job_id, len(spec_lock_md))
+            spec_lock_md = example_spec_lock
+            logger.info("[%s] spec_lock overridden with example (%d chars)", job_id, len(spec_lock_md))
+
+        # Extract config section for explicit injection into Executor user prompt
+        config_section_match = re.search(
+            r"(##\s*CONFIGURATION.*?)(?=##\s*SLIDE|\Z)", spec_lock_md, re.DOTALL | re.IGNORECASE
+        )
+        spec_lock_config_section = config_section_match.group(1).strip() if config_section_match else (
+            f"## CONFIGURATION\ngeneration_mode: {req.content_mode.upper()}\n"
+            f"slide_count: {spec_slide_count}\ninclude_cta: {str(spec_include_cta).lower()}"
+        )
 
         sys_b = _EXECUTOR_SYSTEM.format(
             executor_base=_skill("references/executor-base.md", 3000),
             shared_standards=_skill("references/shared-standards.md", 2000),
-            slides_count_padded=n_pad,
         )
+
         usr_b = _EXECUTOR_USER.format(
-            slides_count=n,
-            slides_count_minus_1=n - 1,
-            slides_count_padded=n_pad,
+            spec_lock_config_section=spec_lock_config_section,
+            slide_count=spec_slide_count,
             design_spec_md=design_spec_md,
             spec_lock_md=spec_lock_md,
             content=req.content,
@@ -738,21 +900,12 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             extra=extra,
         )
 
-        if req.content_mode == "strict":
-            executor_strict = """
-STRICT MODE ACTIVE:
-Reproduce source text verbatim in every SVG text element.
-Do not change a single word from the Strategist's content outline.
-Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
-"""
-            sys_b = executor_strict.strip() + "\n\n" + sys_b
-
-        logger.info("[%s] Phase B — Executor content_mode=%s", job_id, req.content_mode)
+        logger.info("[%s] Phase B — Executor content_mode=%s slide_count=%d", job_id, req.content_mode, spec_slide_count)
         raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
         await _log_ai_usage(req.tenant_id, "pptmaster_executor", "claude-sonnet-4-6", pt_b, ct_b)
-        svg_files = _parse_executor(raw_b)
 
+        svg_files = _parse_executor(raw_b)
         if not svg_files:
             raise ValueError("Executor produced no SVG files")
 
@@ -771,7 +924,7 @@ Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
         await _run_async("svg_to_pptx.py",    project_dir)
         _set_job(job_id, step=3, progress=90)
 
-        # ── Collect SVG slides (svg_output first, then svg_final) ────────────
+        # ── Collect SVG slides ────────────────────────────────
         svg_slides: list[str] = []
         for _svg_dir_name in ("svg_output", "svg_final"):
             _svg_dir   = project_dir / _svg_dir_name
@@ -792,7 +945,7 @@ Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
         if not exports:
             raise ValueError("svg_to_pptx.py produced no PPTX")
 
-        pptx         = exports[0]
+        pptx        = exports[0]
         pptx_bytes  = pptx.read_bytes()
         pptx_b64    = base64.b64encode(pptx_bytes).decode("utf-8")
 
@@ -824,8 +977,9 @@ Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
                      "pptx_url":    pptx_url,
                      "document_id": document_id,
                      "svg_slides":  svg_slides,
+                     "slide_count": spec_slide_count,
                  })
-        logger.info("[%s] DONE", job_id)
+        logger.info("[%s] DONE — %d slides", job_id, spec_slide_count)
 
     except Exception as e:
         logger.error("[%s] Pipeline error: %s", job_id, e, exc_info=True)
@@ -837,7 +991,6 @@ Copy text nodes exactly — no synonyms, no rephrasing, no omissions.
 
 @app.post("/generate-pptx")
 async def start_generate(req: GenerateRequest):
-    """Start async pipeline — returns job_id immediately for polling."""
     job_id = uuid.uuid4().hex[:8]
     _save_job(job_id, {
         "status":   "running",
@@ -853,7 +1006,6 @@ async def start_generate(req: GenerateRequest):
 
 @app.get("/generate-pptx/{job_id}")
 async def poll_generate(job_id: str):
-    """Poll job status. Returns step (0-3), progress (0-100), status, result."""
     job = _load_jobs().get(job_id)
     if not job:
         raise HTTPException(404, f"Job {job_id!r} not found")
@@ -868,7 +1020,7 @@ async def root():
     return {
         "service":   "traitement_pptmaster",
         "status":    "ok",
-        "version":   "1.0.0",
+        "version":   "1.1.0",
         "endpoints": ["GET /layouts", "POST /generate-pptx", "GET /generate-pptx/{job_id}"],
     }
 
