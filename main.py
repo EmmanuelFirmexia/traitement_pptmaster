@@ -77,8 +77,11 @@ class GenerateRequest(BaseModel):
     content_mode:       str = "marketing"       # "marketing" | "strict"
     document_type:      str = "presentation"    # "presentation" | "report" | "diagnostic"
     # ── NOUVEAU : options utilisateur ──────────────────────────────────────
+    titre:              str = ""               # alias frontend pour title
+    palette_key:        str = "theme"          # "theme" | "tenant" | "neutral"
     include_cta:        bool = False            # Ajouter une slide CTA finale
     target_slide_count: Optional[int] = None   # None = adaptatif, int = contrainte exacte
+    document_id:        Optional[str] = None   # présent = mode édition (UPDATE)
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -717,30 +720,55 @@ async def _sb_upsert_document(
     pptx_url: str,
     svg_slides: list | None,
     layout: str = "free",
+    source_content: str = "",
+    palette_key: str = "theme",
+    include_cta: bool = False,
+    target_slide_count: Optional[int] = None,
+    document_id: Optional[str] = None,
 ) -> str:
     payload = {
-        "tenant_id":   tenant_id,
-        "titre":       titre,
-        "format":      "paysage",
-        "design":      "ppt-master",
-        "provider":    "claude",
-        "pptx_url":    pptx_url,
-        "html_output": json.dumps(svg_slides),
-        "layout":      layout,
+        "tenant_id":          tenant_id,
+        "titre":              titre,
+        "format":             "paysage",
+        "design":             "ppt-master",
+        "provider":           "claude",
+        "pptx_url":           pptx_url,
+        "html_output":        json.dumps(svg_slides),
+        "layout":             layout,
+        "source_content":     source_content,
+        "palette_key":        palette_key,
+        "include_cta":        include_cta,
+        "target_slide_count": target_slide_count,
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            f"{SUPABASE_URL}/rest/v1/studio_documents",
-            headers={
-                "apikey":        SUPABASE_SERVICE_KEY,
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                "Content-Type":  "application/json",
-                "Prefer":        "return=representation",
-            },
-            json=payload,
-        )
-        r.raise_for_status()
-        return r.json()[0]["id"]
+        if document_id:
+            update_payload = {k: v for k, v in payload.items() if k != "tenant_id"}
+            r = await client.patch(
+                f"{SUPABASE_URL}/rest/v1/studio_documents?id=eq.{document_id}",
+                headers={
+                    "apikey":        SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    "Content-Type":  "application/json",
+                    "Prefer":        "return=representation",
+                },
+                json=update_payload,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0]["id"] if rows else document_id
+        else:
+            r = await client.post(
+                f"{SUPABASE_URL}/rest/v1/studio_documents",
+                headers={
+                    "apikey":        SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    "Content-Type":  "application/json",
+                    "Prefer":        "return=representation",
+                },
+                json=payload,
+            )
+            r.raise_for_status()
+            return r.json()[0]["id"]
 
 # ─────────────────────────────────────────────
 # PIPELINE (background task)
@@ -949,7 +977,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         pptx_bytes  = pptx.read_bytes()
         pptx_b64    = base64.b64encode(pptx_bytes).decode("utf-8")
 
-        title       = req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
+        title       = req.titre or req.title or req.content[:60].split('\n')[0].strip() or f"Présentation {job_id}"
         pptx_url    = ""
         document_id = ""
 
@@ -962,6 +990,11 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
                     pptx_url=pptx_url,
                     svg_slides=svg_slides,
                     layout=req.layout or "free",
+                    source_content=req.content,
+                    palette_key=req.palette_key,
+                    include_cta=req.include_cta,
+                    target_slide_count=req.target_slide_count,
+                    document_id=req.document_id,
                 )
                 logger.info("[%s] Supabase OK → doc=%s", job_id, document_id)
             except Exception as e:
