@@ -896,12 +896,14 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
 
         # ── Phase B : Executor ────────────────────────────────
         # Override spec_lock.md with example's locked version for visual style
-        if spec_lock_path is not None and spec_lock_path.exists():
+        if spec_lock_path is not None and spec_lock_path.exists() and req.content_mode != "strict":
             # Merge: keep CONFIGURATION from generated spec_lock, override style from example
             example_spec_lock = spec_lock_path.read_text(encoding="utf-8")
             shutil.copy(spec_lock_path, project_dir / "spec_lock.md")
             spec_lock_md = example_spec_lock
             logger.info("[%s] spec_lock overridden with example (%d chars)", job_id, len(spec_lock_md))
+        else:
+            logger.info("[%s] spec_lock kept from Strategist (mode=%s)", job_id, req.content_mode)
 
         # Extract config section for explicit injection into Executor user prompt
         config_section_match = re.search(
