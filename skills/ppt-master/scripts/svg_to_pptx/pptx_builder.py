@@ -10,6 +10,7 @@ import re
 import posixpath
 import shutil
 import tempfile
+import traceback
 import uuid
 import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -934,8 +935,10 @@ def create_pptx_with_native_svg(
                 success_count += 1
 
             except Exception as e:
-                if verbose:
-                    print(f"  [{i}/{len(svg_files)}] {svg_path.name} - Error: {e}")
+                print(
+                    f"  [{i}/{len(svg_files)}] {svg_path.name} - Error: {e}\n"
+                    f"{traceback.format_exc()}"
+                )
                 if use_native_shapes:
                     raise
 
