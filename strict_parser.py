@@ -36,7 +36,7 @@ from bs4 import BeautifulSoup
 # CONSTANTES
 # ─────────────────────────────────────────
 
-SEUIL_CHARS = 300  # caractères max de texte par slide
+SEUIL_CHARS = 400  # caractères max de texte par slide
 
 ABREVIATIONS = {"etc", "ex", "cf", "art", "al", "fig", "vol", "p", "pp", "n°", "dr", "mr", "mme", "st"}
 
@@ -432,21 +432,30 @@ def parse_strict_content(source_text: str) -> list[dict]:
     if not source_text or not source_text.strip():
         return []
 
-    # 0. Prétraitement : convertir le texte brut en Markdown
+    # 0. Prétraitement : convertir le texte brut en Markdown.
+    # Forcer chaque puce sur sa propre ligne, avec une ligne vide avant
+    # et après le groupe de puces (sinon markdown_to_blocs ne détecte pas la liste).
     lines = source_text.split('\n')
     md_lines = []
+    in_list = False
     for line in lines:
-        line = line.strip()
-        if not line:
-            md_lines.append('')
-            continue
-        # Puces • → - (Markdown)
-        if line.startswith('•') or line.startswith('\t•'):
-            line = '- ' + line.lstrip('•\t').strip()
-        # Lignes courtes sans ponctuation finale = titre potentiel
-        elif len(line) < 60 and not line.endswith(('.', ',', ':', '—', '?')):
-            line = '## ' + line
-        md_lines.append(line)
+        stripped = line.strip()
+        if stripped.startswith('•') or stripped.startswith('\t•'):
+            if not in_list:
+                md_lines.append('')  # ligne vide avant le groupe
+                in_list = True
+            md_lines.append('- ' + stripped.lstrip('•\t').strip())
+        else:
+            if in_list:
+                md_lines.append('')  # ligne vide après le groupe
+                in_list = False
+            if not stripped:
+                md_lines.append('')
+                continue
+            # Lignes courtes sans ponctuation finale = titre potentiel
+            if len(stripped) < 60 and not stripped.endswith(('.', ',', ':', '—', '?', '!')):
+                stripped = '## ' + stripped
+            md_lines.append(stripped)
 
     md_text = '\n'.join(md_lines)
 
