@@ -432,8 +432,26 @@ def parse_strict_content(source_text: str) -> list[dict]:
     if not source_text or not source_text.strip():
         return []
 
+    # 0. Prétraitement : convertir le texte brut en Markdown
+    lines = source_text.split('\n')
+    md_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            md_lines.append('')
+            continue
+        # Puces • → - (Markdown)
+        if line.startswith('•') or line.startswith('\t•'):
+            line = '- ' + line.lstrip('•\t').strip()
+        # Lignes courtes sans ponctuation finale = titre potentiel
+        elif len(line) < 60 and not line.endswith(('.', ',', ':', '—', '?')):
+            line = '## ' + line
+        md_lines.append(line)
+
+    md_text = '\n'.join(md_lines)
+
     # 1. Markdown → blocs (titres, textes, listes, tableaux, stats)
-    blocs = markdown_to_blocs(source_text, {})
+    blocs = markdown_to_blocs(md_text, {})
 
     # 2. Éclater les blocs mixtes (gras en tête + texte normal → titre + texte)
     blocs = eclater_blocs_mixtes(blocs)
