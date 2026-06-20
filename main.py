@@ -1090,10 +1090,28 @@ async def root():
         "service":   "traitement_pptmaster",
         "status":    "ok",
         "version":   "1.1.0",
-        "endpoints": ["GET /layouts", "POST /generate-pptx", "GET /generate-pptx/{job_id}"],
+        "endpoints": ["GET /layouts", "POST /generate-pptx", "GET /generate-pptx/{job_id}", "POST /parse-strict"],
     }
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/parse-strict")
+async def parse_strict_endpoint(data: dict):
+    """
+    Endpoint de debug — retourne le content_lock sans générer de PPTX.
+    Body: { "content": "texte source..." }
+    """
+    from strict_parser import parse_strict_content
+    content = data.get("content", "")
+    if not content:
+        return {"error": "content vide", "slides": []}
+
+    slides = parse_strict_content(content)
+    return {
+        "slide_count": len(slides),
+        "slides": slides
+    }
