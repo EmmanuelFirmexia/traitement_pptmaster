@@ -30,6 +30,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from strict_parser import parse_strict_content
+
 load_dotenv()
 
 # ─────────────────────────────────────────────
@@ -401,7 +403,7 @@ Generate spec files for the following presentation:
 
 CONTENT:
 {content}
-
+{content_lock_section}
 CONFIRMED PARAMETERS:
 - Canvas: PPT 16:9  →  viewBox 0 0 1280 720
 - Style: {style}
@@ -481,7 +483,7 @@ FULL SPEC LOCK:
 
 SOURCE CONTENT (reference only — do not add content not in spec_lock.md):
 {content}
-
+{content_lock_executor_note}
 VISUAL STYLE: {layout_label}
 Apply this aesthetic consistently — colors, shapes, gradients, and layout patterns must reflect this style.
 
@@ -784,6 +786,14 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
         for sub in ["svg_output", "notes", "exports", "images", "svg_final"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
 
+        # ── Phase 0 : Parser déterministe (mode strict uniquement) ──
+        content_lock = None
+        if req.content_mode == "strict":
+            content_lock = parse_strict_content(req.content)
+            logger.info("[%s] content_lock: %d slides parsées (mode strict)",
+                        job_id, len(content_lock))
+            _write(project_dir, "content_lock.json", json.dumps(content_lock, ensure_ascii=False, indent=2))
+
         logger.info(
             "[%s] START provider=%s layout=%s mode=%s include_cta=%s target_slides=%s",
             job_id, req.provider, req.layout, req.content_mode,
@@ -865,8 +875,23 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         else:
             target_label = "null (adaptive — determine from content richness)"
 
+        if req.content_mode == "strict" and content_lock:
+            content_lock_section = f"""
+CONTENT LOCK (MODE STRICT) :
+Le texte de chaque slide est déjà fixé ci-dessous par le parser déterministe.
+Tu ne peux PAS modifier ces textes. Ton seul rôle est d'assigner un type
+de layout à chaque slide (cover/content/list/closing).
+
+{json.dumps(content_lock, ensure_ascii=False, indent=2)}
+
+Génère spec_lock.md en respectant EXACTEMENT ces textes.
+"""
+        else:
+            content_lock_section = ""
+
         usr_a = _STRATEGIST_USER.format(
             content=req.content,
+            content_lock_section=content_lock_section,
             style=req.style,
             primary=req.palette.primary,
             secondary=req.palette.secondary,
@@ -921,12 +946,19 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             shared_standards=_skill("references/shared-standards.md", 2000),
         )
 
+        content_lock_executor_note = (
+            "\nMODE STRICT — Le texte exact de chaque slide est dans content_lock.json — "
+            "ne modifier aucun mot.\n"
+            if req.content_mode == "strict" else ""
+        )
+
         usr_b = _EXECUTOR_USER.format(
             spec_lock_config_section=spec_lock_config_section,
             slide_count=spec_slide_count,
             design_spec_md=design_spec_md,
             spec_lock_md=spec_lock_md,
             content=req.content,
+            content_lock_executor_note=content_lock_executor_note,
             primary=req.palette.primary,
             layout_label=layout_label,
             extra=extra,
