@@ -36,7 +36,7 @@ from bs4 import BeautifulSoup
 # CONSTANTES
 # ─────────────────────────────────────────
 
-SEUIL_CHARS = 600  # caractères max de texte par slide
+SEUIL_CHARS = 300  # caractères max de texte par slide
 
 ABREVIATIONS = {"etc", "ex", "cf", "art", "al", "fig", "vol", "p", "pp", "n°", "dr", "mr", "mme", "st"}
 
@@ -483,9 +483,18 @@ def parse_strict_content(source_text: str) -> list[dict]:
                 title = (bloc.get("texte", "") or "").strip()
             else:
                 # Tout le reste → contenu (texte, stat, tableau, image…)
-                valeur = (bloc.get("texte") or bloc.get("valeur") or "").strip()
-                if valeur:
-                    content.append(valeur)
+                html = bloc.get("html", "")
+                if "<ul>" in html:
+                    # Liste HTML → éclater chaque <li> en item séparé
+                    soup = BeautifulSoup(html, "html.parser")
+                    for li in soup.find_all("li"):
+                        item = li.get_text().strip()
+                        if item:
+                            content.append(item)
+                else:
+                    valeur = (bloc.get("texte") or bloc.get("valeur") or "").strip()
+                    if valeur:
+                        content.append(valeur)
         slides.append({
             "slide_index": idx,
             "type": "cover" if idx == 1 else "content",
