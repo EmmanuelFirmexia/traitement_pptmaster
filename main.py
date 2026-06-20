@@ -851,74 +851,73 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         # ── Phase A : Strategist ──────────────────────────────
         _set_job(job_id, step=0, progress=5)
 
-        content_instructions = CONTENT_MODE_INSTRUCTIONS.get(
-            req.content_mode, CONTENT_MODE_INSTRUCTIONS["marketing"]
-        )
-        type_instructions = DOCUMENT_TYPE_INSTRUCTIONS.get(
-            req.document_type, DOCUMENT_TYPE_INSTRUCTIONS["presentation"]
-        )
-
-        sys_base = _STRATEGIST_SYSTEM_BASE.format(
-            spec_lock_ref=_skill("templates/spec_lock_reference.md", 4000),
-            shared_standards=_skill("references/shared-standards.md", 3000),
-        )
-        sys_a = "\n\n".join(filter(None, [
-            sys_base,
-            type_instructions,
-            content_instructions,
-            design_example_section or "",
-        ]))
-
-        # target_slide_count label for prompt
-        if req.target_slide_count:
-            target_label = f"{req.target_slide_count} slides (exact — user constraint)"
-        else:
-            target_label = "null (adaptive — determine from content richness)"
-
         if req.content_mode == "strict" and content_lock:
-            content_lock_section = f"""
-CONTENT LOCK (MODE STRICT) :
-Le texte de chaque slide est déjà fixé ci-dessous par le parser déterministe.
-Tu ne peux PAS modifier ces textes. Ton seul rôle est d'assigner un type
-de layout à chaque slide (cover/content/list/closing).
-
-{json.dumps(content_lock, ensure_ascii=False, indent=2)}
-
-Génère spec_lock.md en respectant EXACTEMENT ces textes.
-"""
+            # ── Mode strict : Phase A entièrement ignorée (aucun appel LLM Strategist) ──
+            # spec_lock_md est construit directement depuis content_lock.
+            spec_lock_md     = json.dumps(content_lock, ensure_ascii=False, indent=2)
+            design_spec_md   = ""
+            spec_slide_count = len(content_lock)
+            spec_include_cta = False
+            _write(project_dir, "design_spec.md", design_spec_md)
+            _write(project_dir, "spec_lock.md",   spec_lock_md)
+            logger.info("[%s] Mode strict : Phase A ignorée, spec_lock = content_lock", job_id)
+            logger.info("[%s] content_lock.json :\n%s", job_id, spec_lock_md)
         else:
-            content_lock_section = ""
+            content_instructions = CONTENT_MODE_INSTRUCTIONS.get(
+                req.content_mode, CONTENT_MODE_INSTRUCTIONS["marketing"]
+            )
+            type_instructions = DOCUMENT_TYPE_INSTRUCTIONS.get(
+                req.document_type, DOCUMENT_TYPE_INSTRUCTIONS["presentation"]
+            )
 
-        usr_a = _STRATEGIST_USER.format(
-            content=req.content,
-            content_lock_section=content_lock_section,
-            style=req.style,
-            primary=req.palette.primary,
-            secondary=req.palette.secondary,
-            accent=req.palette.accent,
-            include_cta=str(req.include_cta).lower(),
-            target_slide_count=target_label,
-            extra=extra,
-        )
+            sys_base = _STRATEGIST_SYSTEM_BASE.format(
+                spec_lock_ref=_skill("templates/spec_lock_reference.md", 4000),
+                shared_standards=_skill("references/shared-standards.md", 3000),
+            )
+            sys_a = "\n\n".join(filter(None, [
+                sys_base,
+                type_instructions,
+                content_instructions,
+                design_example_section or "",
+            ]))
 
-        logger.info(
-            "[%s] Phase A — Strategist content_mode=%s document_type=%s include_cta=%s target_slides=%s",
-            job_id, req.content_mode, req.document_type, req.include_cta, req.target_slide_count,
-        )
-        raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
-        logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
-        await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
+            # target_slide_count label for prompt
+            if req.target_slide_count:
+                target_label = f"{req.target_slide_count} slides (exact — user constraint)"
+            else:
+                target_label = "null (adaptive — determine from content richness)"
 
-        design_spec_md, spec_lock_md = _parse_strategist(raw_a)
-        _write(project_dir, "design_spec.md", design_spec_md)
-        _write(project_dir, "spec_lock.md",   spec_lock_md)
+            usr_a = _STRATEGIST_USER.format(
+                content=req.content,
+                content_lock_section="",
+                style=req.style,
+                primary=req.palette.primary,
+                secondary=req.palette.secondary,
+                accent=req.palette.accent,
+                include_cta=str(req.include_cta).lower(),
+                target_slide_count=target_label,
+                extra=extra,
+            )
 
-        # Extract slide_count and include_cta from spec_lock
-        spec_slide_count, spec_include_cta = _extract_spec_lock_config(spec_lock_md)
-        logger.info(
-            "[%s] spec_lock parsed: slide_count=%d include_cta=%s",
-            job_id, spec_slide_count, spec_include_cta,
-        )
+            logger.info(
+                "[%s] Phase A — Strategist content_mode=%s document_type=%s include_cta=%s target_slides=%s",
+                job_id, req.content_mode, req.document_type, req.include_cta, req.target_slide_count,
+            )
+            raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
+            logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
+            await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
+
+            design_spec_md, spec_lock_md = _parse_strategist(raw_a)
+            _write(project_dir, "design_spec.md", design_spec_md)
+            _write(project_dir, "spec_lock.md",   spec_lock_md)
+
+            # Extract slide_count and include_cta from spec_lock
+            spec_slide_count, spec_include_cta = _extract_spec_lock_config(spec_lock_md)
+            logger.info(
+                "[%s] spec_lock parsed: slide_count=%d include_cta=%s",
+                job_id, spec_slide_count, spec_include_cta,
+            )
+
         _set_job(job_id, step=1, progress=30)
 
         # ── Phase B : Executor ────────────────────────────────
