@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
+
+logger = logging.getLogger(__name__)
 
 from .drawingml_context import ConvertContext, ShapeResult
 from .drawingml_utils import (
@@ -24,6 +27,17 @@ from .drawingml_elements import (
 
 class SvgNativeConversionError(RuntimeError):
     """Raised when an SVG cannot be faithfully converted to native DrawingML."""
+
+
+def _warn_skipped_element(tag: str, elem_id: str | None, reason: str) -> None:
+    """Log a skipped SVG element so the culprit is identifiable in pipeline logs.
+
+    Used by the resilient per-element path: rather than aborting the whole
+    slide (and the whole pipeline) on one unsupported/malformed element, we
+    skip it and surface exactly what was dropped.
+    """
+    id_part = f' id="{elem_id}"' if elem_id else ''
+    logger.warning('[svg-skip] <%s%s> ignoré — %s', tag, id_part, reason)
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +382,11 @@ def convert_element(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None
         try:
             result = converter(elem, ctx)
         except Exception as e:
+            # Resilience: a single malformed element must not abort the whole
+            # slide (and therefore the whole pipeline). Trace + warn, then skip.
             trace('error', error=str(e))
-            raise SvgNativeConversionError(f'Failed to convert <{tag}>: {e}') from e
+            _warn_skipped_element(tag, elem_id, f'erreur de conversion : {e}')
+            return None
         if result:
             shape_match = re.search(r'<p:cNvPr id="(\d+)"', result.xml)
             metadata: dict[str, Any] = {}
@@ -386,8 +403,10 @@ def convert_element(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None
         trace('skip', reason='non-visual')
         return None
 
+    # Unsupported visual element: skip it instead of aborting the slide.
     trace('unsupported')
-    raise SvgNativeConversionError(f'Unsupported visual SVG element <{tag}>')
+    _warn_skipped_element(tag, elem_id, 'élément visuel non supporté')
+    return None
 
 
 def _local_tag(elem: ET.Element) -> str:
@@ -481,12 +500,17 @@ def convert_svg_to_slide_shapes(
         if verbose:
             print('  Flattened positional <tspan> into independent <text>')
 
+    # Pre-flight scan: report unsupported visual elements but DON'T abort.
+    # Each one is skipped individually during the conversion loop below
+    # (see convert_element), so an unsupported element drops out instead of
+    # crashing the whole slide / pipeline.
     unsupported = _collect_unsupported_visuals(root)
     if unsupported:
         preview = '; '.join(unsupported[:8])
         suffix = '' if len(unsupported) <= 8 else f'; +{len(unsupported) - 8} more'
-        raise SvgNativeConversionError(
-            f'{svg_path.name}: unsupported visual SVG element(s): {preview}{suffix}'
+        logger.warning(
+            '[svg-skip] %s : %d élément(s) visuel(s) non supporté(s), ignoré(s) : %s%s',
+            svg_path.name, len(unsupported), preview, suffix,
         )
 
     defs = collect_defs(root)
@@ -509,7 +533,15 @@ def convert_svg_to_slide_shapes(
         tag = child.tag.replace(f'{{{SVG_NS}}}', '')
         if tag == 'defs':
             continue
-        result = convert_element(child, ctx)
+        # Per-element guard: convert_element already skips unsupported/malformed
+        # elements gracefully, but this catches any unexpected error so one bad
+        # top-level element can never abort the whole slide / pipeline.
+        try:
+            result = convert_element(child, ctx)
+        except Exception as e:  # noqa: BLE001
+            _warn_skipped_element(tag, child.get('id'), f'erreur inattendue : {e}')
+            skipped += 1
+            continue
         if result:
             shapes.append(result.xml)
             converted += 1
