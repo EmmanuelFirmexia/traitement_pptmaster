@@ -536,16 +536,30 @@ MISTRAL_MODEL_EXECUTOR = os.environ.get(
     "devstral-2-123b-instruct-2512",
 )
 
+# Endpoint Scaleway (Devstral y est hébergé) — clé distincte de la clé Mistral
+SCALEWAY_API_URL = os.environ.get(
+    "SCALEWAY_API_URL",
+    "https://api.scaleway.ai/v1/chat/completions",
+)
+SCALEWAY_API_KEY = os.environ.get("SCALEWAY_API_KEY", "")
+
 
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192,
                         mistral_api_key: Optional[str] = None,
-                        model: Optional[str] = None) -> tuple[str, int, int]:
-    key = mistral_api_key or os.environ.get("MISTRAL_API_KEY", "")
+                        model: Optional[str] = None,
+                        use_scaleway: bool = False) -> tuple[str, int, int]:
+    # Routage URL + clé : Scaleway (Devstral) vs API Mistral officielle
+    if use_scaleway:
+        url = SCALEWAY_API_URL
+        key = SCALEWAY_API_KEY
+    else:
+        url = MISTRAL_API_URL
+        key = mistral_api_key or os.environ.get("MISTRAL_API_KEY", "")
     model_to_use = model or os.environ.get("MISTRAL_MODEL_MEDIUM", "mistral-large-latest")
     # max_tokens sans limite artificielle
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
-            MISTRAL_API_URL,
+            url,
             headers={"Authorization": f"Bearer {key}"},
             json={
                 "model": model_to_use,
@@ -580,8 +594,11 @@ async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192,
         return await loop.run_in_executor(
             None, functools.partial(_claude_call, system, user, max_tokens)
         )
+    # Devstral est hébergé sur Scaleway → URL + clé Scaleway
+    use_scaleway = bool(model) and model.lower().startswith("devstral")
     return await _mistral_call(system, user, max_tokens,
-                               mistral_api_key=mistral_api_key, model=model)
+                               mistral_api_key=mistral_api_key, model=model,
+                               use_scaleway=use_scaleway)
 
 
 async def _log_ai_usage(tenant_id: str, action: str, model: str,
