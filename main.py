@@ -75,7 +75,7 @@ class GenerateRequest(BaseModel):
     tenant_id:          str
     title:              str = ""
     layout:             str = "free"
-    provider:           Literal["claude", "mistral"] = "claude"
+    provider:           Literal["claude", "mistral"] = "mistral"
     content_mode:       str = "marketing"       # "marketing" | "strict"
     document_type:      str = "presentation"    # "presentation" | "report" | "diagnostic"
     # ── NOUVEAU : options utilisateur ──────────────────────────────────────
@@ -520,15 +520,16 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, i
 
 
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
-    key = os.environ.get("MISTRAL_API_KEY", "")
+    key = os.environ.get("SCALEWAY_API_KEY_MEDIUM", "")
     if not key:
-        raise HTTPException(500, "MISTRAL_API_KEY not set")
+        raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
+    url = os.environ.get("SCALEWAY_API_URL", "https://api.scaleway.ai/v1/chat/completions")
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
-            "https://api.mistral.ai/v1/chat/completions",
+            url,
             headers={"Authorization": f"Bearer {key}"},
             json={
-                "model": "mistral-large-latest",
+                "model": "mistral-medium-3.5-128b",
                 "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
