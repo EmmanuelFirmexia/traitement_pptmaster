@@ -487,6 +487,13 @@ SOURCE CONTENT (reference only — do not add content not in spec_lock.md):
 VISUAL STYLE: {layout_label}
 Apply this aesthetic consistently — colors, shapes, gradients, and layout patterns must reflect this style.
 
+EXEMPLE SVG RÉEL DU THÈME — À REPRODUIRE EXACTEMENT :
+Style, couleurs, polices, layouts de cet exemple sont OBLIGATOIRES. Seul le contenu textuel change.
+
+{svg_example}
+
+Génère les slides en suivant EXACTEMENT ce style visuel.
+
 {extra}
 
 Instructions:
@@ -993,6 +1000,27 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             if req.content_mode == "strict" else ""
         )
 
+        # ── Few-shot : SVG réel du thème (cover) comme exemple à reproduire ──
+        # On prend le premier SVG de examples/<layout_folder>/svg_output/ (la cover)
+        # et on l'injecte tel quel dans le prompt Executor. .format() n'interprète
+        # pas les accolades des valeurs, donc un SVG avec du CSS inline est sûr.
+        svg_example = "(aucun exemple SVG disponible pour ce thème — suivre le DESIGN SPEC ci-dessus)"
+        if layout_folder:
+            example_svg_dir = EXAMPLES_DIR / layout_folder / "svg_output"
+            if example_svg_dir.is_dir():
+                svg_files_example = sorted(example_svg_dir.glob("*.svg"))
+                if svg_files_example:
+                    cover_svg = svg_files_example[0]
+                    svg_example = cover_svg.read_text(encoding="utf-8")
+                    logger.info(
+                        "[%s] Few-shot SVG example: %s (%d chars)",
+                        job_id, cover_svg.name, len(svg_example),
+                    )
+                else:
+                    logger.warning("[%s] Few-shot: aucun SVG dans %s", job_id, example_svg_dir)
+            else:
+                logger.warning("[%s] Few-shot: dossier introuvable %s", job_id, example_svg_dir)
+
         usr_b = _EXECUTOR_USER.format(
             spec_lock_config_section=spec_lock_config_section,
             slide_count=spec_slide_count,
@@ -1002,6 +1030,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             content_lock_executor_note=content_lock_executor_note,
             primary=req.palette.primary,
             layout_label=layout_label,
+            svg_example=svg_example,
             extra=extra,
         )
 
