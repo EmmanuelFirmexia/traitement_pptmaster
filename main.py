@@ -1028,6 +1028,25 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
 
         await _run_async("total_md_split.py", project_dir)
         await _run_async("finalize_svg.py",   project_dir)
+
+        # ── DEBUG : dump du contenu des SVG avant conversion PPTX ──────
+        # Le crash se produit dans pptx_builder.py:648 (convert_svg_to_slide_shapes),
+        # qui consomme svg_output/. On logge le contenu complet de chaque SVG
+        # généré pour identifier l'élément fautif.
+        _svg_debug_dir = project_dir / "svg_output"
+        _svg_debug_files = sorted(_svg_debug_dir.glob("*.svg")) if _svg_debug_dir.exists() else []
+        logger.info("[svg-dump] %d fichier(s) SVG dans %s", len(_svg_debug_files), _svg_debug_dir)
+        for _svg_file in _svg_debug_files:
+            try:
+                _svg_content = _svg_file.read_text(encoding="utf-8")
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("[svg-dump] lecture impossible %s : %s", _svg_file.name, _exc)
+                continue
+            logger.info(
+                "[svg-dump] ───── %s (%d caractères) ─────\n%s",
+                _svg_file.name, len(_svg_content), _svg_content,
+            )
+
         await _run_async("svg_to_pptx.py",    project_dir)
         _set_job(job_id, step=3, progress=90)
 
