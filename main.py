@@ -84,7 +84,6 @@ class GenerateRequest(BaseModel):
     include_cta:        bool = False            # Ajouter une slide CTA finale
     target_slide_count: Optional[int] = None   # None = adaptatif, int = contrainte exacte
     document_id:        Optional[str] = None   # présent = mode édition (UPDATE)
-    mistral_api_key:    Optional[str] = None   # clé Mistral/Scaleway propre au tenant (sinon env)
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -797,6 +796,25 @@ async def _sb_upsert_document(
 # PIPELINE (background task)
 # ─────────────────────────────────────────────
 
+async def _get_tenant_mistral_key(tenant_id: str) -> "str | None":
+    """Lit la clé Mistral propre au tenant depuis Supabase (colonne tenants.mistral_api_key)."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return None
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/rest/v1/tenants"
+            f"?select=mistral_api_key&id=eq.{tenant_id}",
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            },
+        )
+        rows = r.json()
+        if rows and rows[0].get("mistral_api_key"):
+            return rows[0]["mistral_api_key"]
+    return None
+
+
 async def _pipeline(job_id: str, req: GenerateRequest) -> None:
     try:
         proj_name   = f"ppt_{req.tenant_id[:8]}_{job_id}"
@@ -804,6 +822,9 @@ async def _pipeline(job_id: str, req: GenerateRequest) -> None:
 
         for sub in ["svg_output", "notes", "exports", "images", "svg_final"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        # Clé Mistral propre au tenant (colonne tenants.mistral_api_key), sinon clé d'env
+        tenant_mistral_key = await _get_tenant_mistral_key(req.tenant_id)
 
         # ── Phase 0 : Parser déterministe (mode strict uniquement) ──
         content_lock = None
@@ -923,7 +944,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
                 job_id, req.content_mode, req.document_type, req.include_cta, req.target_slide_count,
             )
             raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096,
-                                           mistral_api_key=req.mistral_api_key)
+                                           mistral_api_key=tenant_mistral_key)
             logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
             _prov_label, _prov_model = _provider_meta(req.provider)
             await _log_ai_usage(req.tenant_id, "pptmaster_strategist", _prov_model, pt_a, ct_a, _prov_label)
@@ -986,7 +1007,7 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
 
         logger.info("[%s] Phase B — Executor content_mode=%s slide_count=%d", job_id, req.content_mode, spec_slide_count)
         raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768,
-                                       mistral_api_key=req.mistral_api_key)
+                                       mistral_api_key=tenant_mistral_key)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
         _prov_label_b, _prov_model_b = _provider_meta(req.provider)
         await _log_ai_usage(req.tenant_id, "pptmaster_executor", _prov_model_b, pt_b, ct_b, _prov_label_b)
