@@ -524,12 +524,14 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> tuple
     if not key:
         raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
     url = os.environ.get("SCALEWAY_API_URL", "https://api.scaleway.ai/v1/chat/completions")
+    model_name = "mistral-medium-3.5-128b"
     async with httpx.AsyncClient(timeout=300) as client:
+        logger.info("[mistral_call] payload: model=%s url=%s", model_name, url)
         r = await client.post(
             url,
             headers={"Authorization": f"Bearer {key}"},
             json={
-                "model": "mistral-medium-3.5-128b",
+                "model": model_name,
                 "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
@@ -537,6 +539,8 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> tuple
                 ],
             },
         )
+        if r.status_code >= 400:
+            logger.error("[mistral_call] error body: %s", r.text)
         r.raise_for_status()
         data = r.json()
         usage = data.get("usage", {})
