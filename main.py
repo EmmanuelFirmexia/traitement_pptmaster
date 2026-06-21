@@ -524,7 +524,7 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> tuple
     if not key:
         raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
     url = os.environ.get("SCALEWAY_API_URL", "https://api.scaleway.ai/v1/chat/completions")
-    model_name = "mistral-medium-3.5-128b"
+    model_name = os.environ.get("MISTRAL_MODEL_MEDIUM", "mistral/mistral-medium-3.5-128b:fp8")
     async with httpx.AsyncClient(timeout=300) as client:
         logger.info("[mistral_call] payload: model=%s url=%s", model_name, url)
         r = await client.post(
