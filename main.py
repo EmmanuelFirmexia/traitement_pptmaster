@@ -530,17 +530,25 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, i
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = "mistral-large-latest"
 
+# Modèle Executor (Phase B = génération de code SVG). Devstral par défaut.
+MISTRAL_MODEL_EXECUTOR = os.environ.get(
+    "MISTRAL_MODEL_EXECUTOR",
+    "devstral-2-123b-instruct-2512",
+)
+
 
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192,
-                        mistral_api_key: Optional[str] = None) -> tuple[str, int, int]:
+                        mistral_api_key: Optional[str] = None,
+                        model: Optional[str] = None) -> tuple[str, int, int]:
     key = mistral_api_key or os.environ.get("MISTRAL_API_KEY", "")
+    model_to_use = model or os.environ.get("MISTRAL_MODEL_MEDIUM", "mistral-large-latest")
     # max_tokens sans limite artificielle
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             MISTRAL_API_URL,
             headers={"Authorization": f"Bearer {key}"},
             json={
-                "model": MISTRAL_MODEL,
+                "model": model_to_use,
                 "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
@@ -565,13 +573,15 @@ def _provider_meta(provider: str) -> tuple[str, str]:
 
 
 async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192,
-               mistral_api_key: Optional[str] = None) -> tuple[str, int, int]:
+               mistral_api_key: Optional[str] = None,
+               model: Optional[str] = None) -> tuple[str, int, int]:
     if provider == "claude":
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, functools.partial(_claude_call, system, user, max_tokens)
         )
-    return await _mistral_call(system, user, max_tokens, mistral_api_key=mistral_api_key)
+    return await _mistral_call(system, user, max_tokens,
+                               mistral_api_key=mistral_api_key, model=model)
 
 
 async def _log_ai_usage(tenant_id: str, action: str, model: str,
@@ -1049,8 +1059,14 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             job_id, design_spec_md[:80] in usr_b if design_spec_md else False,
         )
 
-        raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768,
-                                       mistral_api_key=tenant_mistral_key)
+        # Phase B (Executor = code SVG) → Devstral. Phase A (Strategist = texte)
+        # garde mistral-large-latest.
+        raw_b, pt_b, ct_b = await _llm(
+            req.provider, sys_b, usr_b,
+            max_tokens=32768,
+            mistral_api_key=tenant_mistral_key,
+            model=os.environ.get("MISTRAL_MODEL_EXECUTOR", "devstral-2-123b-instruct-2512"),
+        )
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
         _prov_label_b, _prov_model_b = _provider_meta(req.provider)
         await _log_ai_usage(req.tenant_id, "pptmaster_executor", _prov_model_b, pt_b, ct_b, _prov_label_b)
