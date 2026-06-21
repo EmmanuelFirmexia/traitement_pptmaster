@@ -519,7 +519,7 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, i
     return full_response, prompt_tokens, completion_tokens
 
 
-async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
+async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
     key = os.environ.get("SCALEWAY_API_KEY_MEDIUM", "")
     if not key:
         raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
@@ -538,7 +538,20 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> str:
             },
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        usage = data.get("usage", {})
+        return (
+            data["choices"][0]["message"]["content"],
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
+
+
+# Provider réellement appelé → (label provider, nom du modèle) pour le logging usage
+def _provider_meta(provider: str) -> tuple[str, str]:
+    if provider == "mistral":
+        return "mistral", "mistral-medium-3.5-128b"
+    return "anthropic", "claude-sonnet-4-6"
 
 
 async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
@@ -547,12 +560,12 @@ async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) ->
         return await loop.run_in_executor(
             None, functools.partial(_claude_call, system, user, max_tokens)
         )
-    text = await _mistral_call(system, user, max_tokens)
-    return text, 0, 0
+    return await _mistral_call(system, user, max_tokens)
 
 
 async def _log_ai_usage(tenant_id: str, action: str, model: str,
-                        prompt_tokens: int, completion_tokens: int) -> None:
+                        prompt_tokens: int, completion_tokens: int,
+                        provider: str = "anthropic") -> None:
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         return
     try:
@@ -571,7 +584,7 @@ async def _log_ai_usage(tenant_id: str, action: str, model: str,
                     "prompt_tokens":     prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens":      prompt_tokens + completion_tokens,
-                    "provider":          "anthropic",
+                    "provider":          provider,
                 },
             )
     except Exception as e:
@@ -906,7 +919,8 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
             )
             raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
             logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
-            await _log_ai_usage(req.tenant_id, "pptmaster_strategist", "claude-sonnet-4-6", pt_a, ct_a)
+            _prov_label, _prov_model = _provider_meta(req.provider)
+            await _log_ai_usage(req.tenant_id, "pptmaster_strategist", _prov_model, pt_a, ct_a, _prov_label)
 
             design_spec_md, spec_lock_md = _parse_strategist(raw_a)
             _write(project_dir, "design_spec.md", design_spec_md)
@@ -967,7 +981,8 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         logger.info("[%s] Phase B — Executor content_mode=%s slide_count=%d", job_id, req.content_mode, spec_slide_count)
         raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
-        await _log_ai_usage(req.tenant_id, "pptmaster_executor", "claude-sonnet-4-6", pt_b, ct_b)
+        _prov_label_b, _prov_model_b = _provider_meta(req.provider)
+        await _log_ai_usage(req.tenant_id, "pptmaster_executor", _prov_model_b, pt_b, ct_b, _prov_label_b)
 
         svg_files = _parse_executor(raw_b)
         if not svg_files:
