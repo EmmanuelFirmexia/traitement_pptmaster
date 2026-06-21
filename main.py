@@ -84,6 +84,7 @@ class GenerateRequest(BaseModel):
     include_cta:        bool = False            # Ajouter une slide CTA finale
     target_slide_count: Optional[int] = None   # None = adaptatif, int = contrainte exacte
     document_id:        Optional[str] = None   # présent = mode édition (UPDATE)
+    mistral_api_key:    Optional[str] = None   # clé Mistral/Scaleway propre au tenant (sinon env)
 
 # ─────────────────────────────────────────────
 # LAYOUT CATALOGUE
@@ -519,8 +520,9 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, i
     return full_response, prompt_tokens, completion_tokens
 
 
-async def _mistral_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
-    key = os.environ.get("SCALEWAY_API_KEY_MEDIUM", "")
+async def _mistral_call(system: str, user: str, max_tokens: int = 8192,
+                        mistral_api_key: Optional[str] = None) -> tuple[str, int, int]:
+    key = mistral_api_key or os.environ.get("SCALEWAY_API_KEY_MEDIUM", "")
     if not key:
         raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
     url = os.environ.get("SCALEWAY_API_URL", "https://api.scaleway.ai/v1/chat/completions")
@@ -558,13 +560,14 @@ def _provider_meta(provider: str) -> tuple[str, str]:
     return "anthropic", "claude-sonnet-4-6"
 
 
-async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192) -> tuple[str, int, int]:
+async def _llm(provider: str, system: str, user: str, max_tokens: int = 8192,
+               mistral_api_key: Optional[str] = None) -> tuple[str, int, int]:
     if provider == "claude":
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, functools.partial(_claude_call, system, user, max_tokens)
         )
-    return await _mistral_call(system, user, max_tokens)
+    return await _mistral_call(system, user, max_tokens, mistral_api_key=mistral_api_key)
 
 
 async def _log_ai_usage(tenant_id: str, action: str, model: str,
@@ -921,7 +924,8 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
                 "[%s] Phase A — Strategist content_mode=%s document_type=%s include_cta=%s target_slides=%s",
                 job_id, req.content_mode, req.document_type, req.include_cta, req.target_slide_count,
             )
-            raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096)
+            raw_a, pt_a, ct_a = await _llm(req.provider, sys_a, usr_a, max_tokens=4096,
+                                           mistral_api_key=req.mistral_api_key)
             logger.info("[%s] Phase A tokens — prompt=%d completion=%d", job_id, pt_a, ct_a)
             _prov_label, _prov_model = _provider_meta(req.provider)
             await _log_ai_usage(req.tenant_id, "pptmaster_strategist", _prov_model, pt_a, ct_a, _prov_label)
@@ -983,7 +987,8 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         )
 
         logger.info("[%s] Phase B — Executor content_mode=%s slide_count=%d", job_id, req.content_mode, spec_slide_count)
-        raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768)
+        raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768,
+                                       mistral_api_key=req.mistral_api_key)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
         _prov_label_b, _prov_model_b = _provider_meta(req.provider)
         await _log_ai_usage(req.tenant_id, "pptmaster_executor", _prov_model_b, pt_b, ct_b, _prov_label_b)
