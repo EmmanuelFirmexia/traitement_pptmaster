@@ -520,20 +520,21 @@ def _claude_call(system: str, user: str, max_tokens: int = 8192) -> tuple[str, i
     return full_response, prompt_tokens, completion_tokens
 
 
+# URL fixe Mistral officiel
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_MODEL = "mistral-large-latest"
+
+
 async def _mistral_call(system: str, user: str, max_tokens: int = 8192,
                         mistral_api_key: Optional[str] = None) -> tuple[str, int, int]:
-    key = mistral_api_key or os.environ.get("SCALEWAY_API_KEY_MEDIUM", "")
-    if not key:
-        raise HTTPException(500, "SCALEWAY_API_KEY_MEDIUM not set")
-    url = os.environ.get("SCALEWAY_API_URL", "https://api.scaleway.ai/v1/chat/completions")
-    model_name = os.environ.get("MISTRAL_MODEL_MEDIUM", "mistral/mistral-medium-3.5-128b:fp8")
+    key = mistral_api_key or os.environ.get("MISTRAL_API_KEY", "")
+    # max_tokens sans limite artificielle
     async with httpx.AsyncClient(timeout=300) as client:
-        logger.info("[mistral_call] payload: model=%s url=%s", model_name, url)
         r = await client.post(
-            url,
+            MISTRAL_API_URL,
             headers={"Authorization": f"Bearer {key}"},
             json={
-                "model": model_name,
+                "model": MISTRAL_MODEL,
                 "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
@@ -545,18 +546,15 @@ async def _mistral_call(system: str, user: str, max_tokens: int = 8192,
             logger.error("[mistral_call] error body: %s", r.text)
         r.raise_for_status()
         data = r.json()
+        content = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
-        return (
-            data["choices"][0]["message"]["content"],
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-        )
+        return content, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 
 # Provider réellement appelé → (label provider, nom du modèle) pour le logging usage
 def _provider_meta(provider: str) -> tuple[str, str]:
     if provider == "mistral":
-        return "mistral", "mistral-medium-3.5-128b"
+        return "mistral", MISTRAL_MODEL
     return "anthropic", "claude-sonnet-4-6"
 
 
