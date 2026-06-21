@@ -1006,6 +1006,20 @@ Only the CONTENT (texts, data) changes. The STYLE is locked.
         )
 
         logger.info("[%s] Phase B — Executor content_mode=%s slide_count=%d", job_id, req.content_mode, spec_slide_count)
+
+        # ── DEBUG : ce que reçoit réellement l'Executor en Phase B ──────
+        # Si design_spec_md est tronqué/absent → le problème est ici, pas dans
+        # le modèle. Si tout est présent → Mistral ignore le spec (→ few-shot
+        # ou retour Claude).
+        logger.info("[%s] Phase B system prompt length: %d chars", job_id, len(sys_b))
+        logger.info("[%s] Phase B user prompt length: %d chars", job_id, len(usr_b))
+        logger.info("[%s] Phase B design_spec length: %d chars", job_id, len(design_spec_md))
+        logger.info("[%s] Phase B design_spec preview: %s", job_id, design_spec_md[:200])
+        logger.info(
+            "[%s] Phase B design_spec in user prompt: %s",
+            job_id, design_spec_md[:80] in usr_b if design_spec_md else False,
+        )
+
         raw_b, pt_b, ct_b = await _llm(req.provider, sys_b, usr_b, max_tokens=32768,
                                        mistral_api_key=tenant_mistral_key)
         logger.info("[%s] Phase B tokens — prompt=%d completion=%d", job_id, pt_b, ct_b)
